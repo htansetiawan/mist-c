@@ -1,6 +1,6 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
-SRC = src/board.c src/belief.c src/cfr.c src/eval.c src/search.c src/gtcfr.c
+SRC = src/board.c src/belief.c src/cfr.c src/eval.c src/search.c src/gtcfr.c src/front.c
 
 build/test_rules: $(SRC) tests/test_rules.c src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_rules.c -lm -o $@
@@ -17,14 +17,18 @@ build/test_search: $(SRC) tests/test_search.c src/search.h src/cfr.h src/belief.
 build/test_guard: $(SRC) tests/test_guard.c src/fow.h src/belief.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_guard.c -lm -o $@
 
-test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard
+build/test_front: $(SRC) tests/test_front.c src/front.h src/belief.h src/fow.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_front.c -lm -o $@
+
+test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard build/test_front
 	./build/test_rules tests/vectors.txt
 	./build/test_guard tests/traces.txt
+	./build/test_front
 	./build/test_belief tests/traces.txt 100000
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25
 
-build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h src/eval.h
+build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h src/eval.h src/front.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) src/main.c -lm -o $@
 
 clean:

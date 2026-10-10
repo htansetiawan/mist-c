@@ -84,14 +84,24 @@ static void remember_leaf(Tree *t, int node, const Position *p, const uint64_t h
     t->leaf_of[node] = t->n_leaves++;
 }
 
+static int has_move(const MoveList *l, Move m) {
+    for (int i = 0; i < l->count; ++i) if (l->moves[i] == m) return 1;
+    return 0;
+}
+
 /* Children of `p` for its side to move: terminal nodes or new evaluated leaves.
- * Returns the number of moves (0 = no legal move). */
-static int build_children(Tree *t, const Position *p, const uint64_t hist[2], int *kids) {
+ * `only` (the root) fixes the moves and their order; a move it lists that is
+ * not legal in `p` (an en passant that only some boards allow) keeps `p`'s
+ * evaluation. Returns the number of moves (0 = no legal move). */
+static int build_children(Tree *t, const Position *p, const uint64_t hist[2], int *kids, const MoveList *only) {
     const int mover = p->side, other = mover ^ 1, us = t->us;
     const int me = mover == us ? 0 : 1;   /* index into hist for the mover */
     MoveList l; generate_moves(p, &l);
+    MoveList own;
+    if (only) { own = l; l = *only; }
     char view[65];
     for (int a = 0; a < l.count; ++a) {
+        if (only && !has_move(&own, l.moves[a])) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, evaluate(p, us)); continue; }
         Position q = *p; Undo u; make_move(&q, l.moves[a], &u);
         if (king_square(&q, other) < 0) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, mover == us ? 1.0 : -1.0); continue; }
         if (mover_left_king_capturable(&q)) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, mover == us ? -1.0 : 1.0); continue; }
@@ -110,7 +120,7 @@ static int build_children(Tree *t, const Position *p, const uint64_t hist[2], in
 static int expand(Tree *t, int index) {
     Leaf leaf = t->leaves[index];
     int kids[256];
-    const int count = build_children(t, &leaf.pos, leaf.hist, kids);
+    const int count = build_children(t, &leaf.pos, leaf.hist, kids, NULL);
     if (count == 0) return 0;
     const int player = leaf.pos.side == t->us ? 0 : 1;
     const int I = infoset_for(t, player, leaf.hist[player], count);
@@ -188,6 +198,15 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     }
     MoveList ours; generate_moves(&b->items[idx[0]], &ours);
     if (ours.count == 0) { free(idx); game_free(&t.g); return 0; }
+    if (params->avoid_count > 0) {
+        MoveList kept; kept.count = 0;
+        for (int a = 0; a < ours.count; ++a) {
+            int avoided = 0;
+            for (int i = 0; i < params->avoid_count; ++i) avoided |= ours.moves[a] == params->avoid[i];
+            if (!avoided) kept.moves[kept.count++] = ours.moves[a];
+        }
+        if (kept.count > 0) ours = kept;
+    }
     /* root: chance over I -> our single information set (same view and history throughout P) */
     const int root = game_node(&t.g, NODE_CHANCE, 0, -1, 0.0);
     const uint64_t our_root_hist = 0x726f6f74ULL;
@@ -198,7 +217,7 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
         const Position *p = &b->items[idx[k]];
         const uint64_t hist[2] = {our_root_hist, b->hist ? b->hist[idx[k]] : 0};
         const int node = game_node(&t.g, NODE_TERMINAL, 0, -1, 0.0);
-        const int count = build_children(&t, p, hist, kids);
+        const int count = build_children(&t, p, hist, kids, &ours);
         game_expand_leaf(&t.g, node, 0, root_I, kids, count);
         chance_kids[k] = node; chance_p[k] = 1.0 / K;
     }

@@ -55,7 +55,8 @@ size_t belief_resample(Belief *b, const char view[65], const int their[6], bb_t 
  * illegal on the true board, which loses the game. Generated on the visible
  * position (unseen squares empty) and kept iff we see every square the move
  * needs: its destination, the square a double push crosses, the squares
- * between king and rook. En passant is left out. Returns the count. */
+ * between king and rook. En passant only when the view proves it (the taken
+ * pawn is seen though none of our pieces attacks it). Returns the count. */
 int view_moves(const char view[65], int us, bb_t our_castle, MoveList *out);
 
 #endif

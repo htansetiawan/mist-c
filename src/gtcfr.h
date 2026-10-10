@@ -23,6 +23,8 @@ typedef struct {
     int max_nodes;               /* tree size cap */
     int expansions_per_round, iterations_per_round;
     unsigned long long seed;
+    const Move *avoid;           /* root moves left out (e.g. a third repetition when ahead) */
+    int avoid_count;             /* ignored if it would leave no move */
 } GtcfrParams;
 
 int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out);

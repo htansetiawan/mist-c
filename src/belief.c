@@ -372,5 +372,20 @@ int view_moves(const char view[65], int us, bb_t our_castle, MoveList *out) {
         }
         if (ok) out->moves[out->count++] = m;
     }
+    /* En passant: an enemy pawn beside ours that we see although none of our
+     * pieces attacks its square can only be seen as the pawn an en passant
+     * capture takes, so that capture is legal. */
+    const int dr = us == WHITE ? 8 : -8, fifth = us == WHITE ? 4 : 3;
+    const char enemy_pawn = us == WHITE ? 'p' : 'P';
+    for (bb_t b = p.by_type[PAWN] & p.by_color[us]; b; b &= b - 1) {
+        const int from = __builtin_ctzll(b), f = from % 8;
+        if (from / 8 != fifth) continue;
+        for (int df = -1; df <= 1; df += 2) {
+            if (f + df < 0 || f + df > 7) continue;
+            const int beside = from + df, to = beside + dr;
+            if (view[beside] == enemy_pawn && view[to] == '-' && !is_attacked(&p, beside, us))
+                out->moves[out->count++] = MAKE_MOVE(from, to, NO_PIECE);
+        }
+    }
     return out->count;
 }

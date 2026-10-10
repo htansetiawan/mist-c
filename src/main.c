@@ -1,4 +1,4 @@
-/* mist-c: referee-protocol front end (milestone M5, first version).
+/* mist-c: referee-protocol front end (milestone M5).
  *
  * The course referee sends "fow", then "<w|b> <base> <increment>"; the bot
  * answers "ready". Then a 64-character view arrives before every ply, and our
@@ -8,18 +8,19 @@
  * view by every opponent move consistent with it. If the capped belief ever
  * loses every position, it is rebuilt from the current view (belief_resample),
  * with the opponent's material counted from our captures. Whatever decides,
- * the move sent must be one view_moves allows: v1 lost two games by pushing a
- * pawn into an unseen piece after its belief ran empty.
+ * the move sent must be one view_moves allows (or, with the belief exact,
+ * one legal on every board in it): v1 lost two games by pushing a pawn into an
+ * unseen piece after its belief ran empty. When ahead, moves that would make
+ * our pieces stand as they already have twice are left out: v1 drew three
+ * games by repetition, two of them seven points up.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "eval.h"
+#include "front.h"
 #include "gtcfr.h"
 #include "search.h"
-
-#define BIT_AT(sq) ((bb_t)1 << (sq))
 
 static int is_view(const char *s) {
     if (strlen(s) != 64) return 0;
@@ -27,30 +28,17 @@ static int is_view(const char *s) {
     return 1;
 }
 
-/* What we see, as a position: our pieces and the visible enemy pieces. */
-static void view_position(const char *view, int us, Position *p, bb_t castle) {
-    char board[65];
-    for (int i = 0; i < 64; ++i) board[i] = view[i] == '?' ? '-' : view[i];
-    board[64] = '\0';
-    pos_from_board_string(p, board, us, castle, -1);
-}
-
-static int piece_index(char c) {
-    const char *at = strchr("pnbrqk", c >= 'A' && c <= 'Z' ? c + 32 : c);
-    return c && at ? (int)(at - "pnbrqk") : -1;
-}
-
-/* The best move view_moves allows, by the evaluation after it on the visible
- * position: the last resort when nothing else gave a move it allows. */
-static Move best_view_move(const char *view, int us, bb_t castle, const MoveList *allowed) {
-    Position seen; view_position(view, us, &seen, castle);
-    Move best = allowed->moves[0]; int best_cp = -1000000;
-    for (int i = 0; i < allowed->count; ++i) {
-        Position q = seen; Undo u; make_move(&q, allowed->moves[i], &u);
-        const int cp = king_square(&q, us ^ 1) < 0 ? 100000 : evaluate_cp(&q, us);
-        if (cp > best_cp) { best_cp = cp; best = allowed->moves[i]; }
+/* Legal in every position of P: with P exact (never capped) the true board is
+ * among them, so this proves legality where the view alone cannot (an en
+ * passant whose taken pawn another piece of ours also attacks). */
+static int legal_everywhere(const Belief *b, Move m) {
+    for (size_t i = 0; i < b->count; ++i) {
+        MoveList l; generate_moves(&b->items[i], &l);
+        int found = 0;
+        for (int j = 0; j < l.count && !found; ++j) found = l.moves[j] == m;
+        if (!found) return 0;
     }
-    return best;
+    return b->count > 0;
 }
 
 int main(void) {
@@ -61,17 +49,16 @@ int main(void) {
     const int us = side[0] == 'w' ? WHITE : BLACK;
     fow_init(); zobrist_init();
     const size_t cap = getenv("MIST_CAP") ? (size_t)strtoull(getenv("MIST_CAP"), NULL, 10) : 200000;
+    const double max_seconds = getenv("MIST_MAX_SECONDS") ? atof(getenv("MIST_MAX_SECONDS")) : 10.0;
+    const int repeat_lead = getenv("MIST_REPEAT_LEAD") ? atoi(getenv("MIST_REPEAT_LEAD")) : 2;
     Belief b; belief_init_start(&b, us, cap);
+    static Front front;
+    front_init(&front, us);
     printf("ready\n"); fflush(stdout);
 
     char view[65] = "";
     int views = 0, moved = 0, decisions = 0, rebuilds = 0;
     Move last = 0;
-    /* what the opponent still has (less our captures) and the rooks we may castle with */
-    int their[6] = {8, 2, 2, 2, 1, 1};
-    const int home = us == WHITE ? 0 : 56;
-    bb_t our_castle = BIT_AT(home) | BIT_AT(home + 7);
-    const double max_seconds = getenv("MIST_MAX_SECONDS") ? atof(getenv("MIST_MAX_SECONDS")) : 10.0;
     unsigned long long seed = getenv("FOW_SEED") ? strtoull(getenv("FOW_SEED"), NULL, 10) : 1;
     while (fgets(line, sizeof line, stdin)) {
         line[strcspn(line, "\r\n")] = '\0';
@@ -81,14 +68,10 @@ int main(void) {
                 if (moved) belief_after_own(&b, last, view);
                 else belief_after_opponent(&b, view);
             }
-            /* a rook gone from its corner (or a king gone from its square) ends castling there */
-            const char rook = us == WHITE ? 'R' : 'r', king = us == WHITE ? 'K' : 'k';
-            if (view[home + 4] != king) our_castle = 0;
-            if (view[home] != rook) our_castle &= ~BIT_AT(home);
-            if (view[home + 7] != rook) our_castle &= ~BIT_AT(home + 7);
+            front_see(&front, view);
             if (b.count == 0 && !moved && views > 1) {
                 /* our turn and nothing left: rebuild from what we see */
-                const size_t n = belief_resample(&b, view, their, our_castle, 2000, 60000);
+                const size_t n = belief_resample(&b, view, front.their, front.castle, 2000, 60000);
                 fprintf(stderr, "mist: belief empty, rebuilt %zu positions from the view (rebuild %d)\n", n, ++rebuilds);
             }
             moved = 0;
@@ -103,46 +86,50 @@ int main(void) {
         if (budget > remaining * 0.3) budget = remaining * 0.3;
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
+        GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions, NULL, 0};
+        if (remaining < 20) { gp.samples = 32; gp.seconds = 0.3; }
+        MoveList allowed;
+        view_moves(view, us, front.castle, &allowed);
+        /* ahead: leave out the moves that would make our pieces stand as they
+         * already have twice (the referee's threefold needs that) */
+        Move repeats[256];
+        const int lead = front_lead(&front, view);
+        if (lead >= repeat_lead && allowed.count > 0) {
+            const int n = front_repeats(&front, view, &allowed, repeats);
+            if (n > 0 && n < allowed.count) {
+                gp.avoid = repeats; gp.avoid_count = n;
+                fprintf(stderr, "mist: ahead by %d; %d moves would repeat our pieces a third time, left out\n", lead, n);
+            }
+        }
         SearchResult r; int ok = 0;
         /* GT-CFR by default (MIST_SEARCH=twoply for the fixed two-ply search) */
         const int twoply = getenv("MIST_SEARCH") && strcmp(getenv("MIST_SEARCH"), "twoply") == 0;
-        GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions};
-        if (remaining < 20) { gp.samples = 32; gp.seconds = 0.3; }
         if (b.count > 0) ok = twoply ? search_decide(&b, &sp, &r) : gtcfr_decide(&b, &gp, &r);
         if (!ok) {
-            /* fallback: decide on the position we can see */
-            Position seen; view_position(view, us, &seen, b.count ? b.items[0].castle_rooks : 0);
+            /* last resort: decide on the position we can see */
+            Position seen; front_view_position(view, us, front.castle, &seen);
             Belief one = {0}; one.items = &seen; one.count = 1; one.us = us;
             ok = search_decide(&one, &sp, &r);
-            fprintf(stderr, "mist: belief empty, decided on the visible position\n");
+            fprintf(stderr, "mist: no belief, decided on the visible position\n");
         }
-        MoveList allowed;
-        if (view_moves(view, us, our_castle, &allowed) > 0) {
+        if (allowed.count > 0) {
             int found = 0;
             for (int i = 0; i < allowed.count; ++i) found |= allowed.moves[i] == r.move;
+            if (ok && !found && !b.overflowed) found = legal_everywhere(&b, r.move);
             if (!ok || !found) {
                 char bad[6]; move_to_uci(r.move, bad);
-                r.move = best_view_move(view, us, our_castle, &allowed);
-                fprintf(stderr, "mist: %s is not safe on every board the view allows; playing a move it allows\n", ok ? bad : "(none)");
+                r.move = front_best_allowed(&front, view, &allowed);
+                fprintf(stderr, "mist: %s is not legal on every board the view allows; playing a move it allows\n", ok ? bad : "(none)");
                 ok = 1;
             }
         }
         if (!ok) { fprintf(stderr, "mist: no legal move\n"); break; }
         char uci[6]; move_to_uci(r.move, uci);
-        {
-            /* count our capture (the destination is visible), en passant included */
-            const int to = MOVE_TO(r.move), from = MOVE_FROM(r.move);
-            const int taken = piece_index(view[to]), mover = piece_index(view[from]);
-            const int theirs = view[to] != '-' && view[to] != '?' && ((us == WHITE) == (view[to] >= 'a' && view[to] <= 'z'));
-            if (theirs && taken >= 0 && their[taken] > 0) --their[taken];
-            else if (mover == PAWN && view[to] == '-' && (to - from) % 8 != 0 && their[PAWN] > 0) --their[PAWN];
-            if (mover == KING) our_castle = 0;
-            our_castle &= ~(BIT_AT(from) | BIT_AT(to));
-        }
-        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f clock=%.1f move=%s\n",
+        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f move=%s\n",
                 ++decisions, b.count, b.overflowed ? "(capped)" : "", r.samples, r.our_moves, r.opponent_infosets, r.nodes,
-                r.iterations, r.probability, r.value, remaining, uci);
+                r.iterations, r.probability, r.value, lead, remaining, uci);
         printf("move %s\n", uci); fflush(stdout);
+        front_play(&front, view, r.move);
         last = r.move; moved = 1;
     }
     belief_free(&b);

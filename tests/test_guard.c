@@ -100,7 +100,10 @@ int main(int argc, char **argv) {
         for (int i = 0; i < legal.count; ++i)
             if (!contains(&safe, legal.moves[i])) {
                 const Move m = legal.moves[i];
-                if (truth.piece[MOVE_FROM(m)] == PAWN && MOVE_TO(m) == truth.ep) ++missed_ep[us];
+                if (truth.piece[MOVE_FROM(m)] == PAWN && MOVE_TO(m) == truth.ep) {
+                    ++missed_ep[us];
+                    if (getenv("GUARD_VERBOSE")) { char u[6]; move_to_uci(m, u); printf("en passant %s not proven by the view %s\n", u, view); }
+                }
                 else if (missed[us]++ < 5) { char u[6]; move_to_uci(m, u); printf("MISSED: %s legal but not allowed\n", u); }
             }
         if (k++ % every) continue;
