@@ -15,7 +15,7 @@ A clean-room C implementation of imperfect-information search for Fog of War (da
 | --- | --- | --- |
 | M1 rules | bitboards, Fog of War move generation (king capture wins; no check rules; castling, en passant, promotions), make/unmake, visibility, arena observation strings | **done**: 13,467 positions, 0 mismatches against the referee-verified rules |
 | M2 belief | the exact set P of positions consistent with our observations, updated incrementally with an enumeration cap | **done**: sound on 40 real arena games (3,137 plies). The true position is never missing while P is exact |
-| M3 search core | game tree with infosets, PCFR+ (last iterate), one-sided GT-CFR, pluggable evaluator, purification | next |
+| M3 search core | game tree with infosets, PCFR+ (last iterate), one-sided GT-CFR, pluggable evaluator, purification | **in progress**: the PCFR+ solver on a generic tree is done (`src/cfr.c`). On Kuhn poker its value converges to -1/18 and its last iterate is unexploitable (to 1e-5) by iteration 100. Next: the Fog of War subgame builder, then GT-CFR expansion |
 | M4 subgame solving | 2-KLUSS, Resolve/Maxmargin gadgets, carry-over between turns | |
 | M5 arena | referee protocol front end, time manager, two threads in 2 cores / 4 GiB | |
 | M6 experiments | against Misty locally; ablations; our improvements | |
