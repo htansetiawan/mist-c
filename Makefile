@@ -1,6 +1,6 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
-SRC = src/board.c src/belief.c src/cfr.c src/search.c
+SRC = src/board.c src/belief.c src/cfr.c src/eval.c src/search.c
 
 build/test_rules: $(SRC) tests/test_rules.c src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_rules.c -lm -o $@
@@ -11,7 +11,7 @@ build/test_belief: $(SRC) tests/test_belief.c src/fow.h src/belief.h
 build/test_cfr: src/cfr.c src/cfr.h tests/test_cfr.c
 	mkdir -p build && $(CC) $(CFLAGS) src/cfr.c tests/test_cfr.c -lm -o $@
 
-build/test_search: $(SRC) tests/test_search.c src/search.h src/cfr.h src/belief.h src/fow.h
+build/test_search: $(SRC) tests/test_search.c src/search.h src/cfr.h src/belief.h src/fow.h src/eval.h
 	mkdir -p build && $(CC) $(CFLAGS) -D_POSIX_C_SOURCE=199309L $(SRC) tests/test_search.c -lm -o $@
 
 test: build/test_rules build/test_belief build/test_cfr build/test_search
@@ -20,7 +20,7 @@ test: build/test_rules build/test_belief build/test_cfr build/test_search
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25
 
-build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h
+build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h src/eval.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) src/main.c -lm -o $@
 
 clean:

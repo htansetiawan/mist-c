@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
         Position p;
         if (pos_from_board_string(&p, board, WHITE, 0, -1) != 0) { puts("FAIL: test board did not parse"); ++failures; }
         Belief b = {0}; b.items = &p; b.count = 1; b.us = WHITE;
-        SearchParams sp = {16, 50, 1}; SearchResult r;
+        SearchParams sp = {16, 50, 1, 0, 0}; SearchResult r;
         char uci[6];
         if (!search_decide(&b, &sp, &r)) { puts("FAIL: no move"); ++failures; }
         move_to_uci(r.move, uci);
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
         if (sscanf(line, "%7s %7s %64s %64s %d %llu %d", who, uci, view, board, &side, &castle, &ep) != 7) continue;
         if (strcmp(who, "us") == 0 && b.count > 0 && !b.overflowed && per_game < max_decisions) {
             Position truth; pos_from_board_string(&truth, prev_board, prev_side, prev_castle, prev_ep);
-            SearchParams sp = {64, 60, (unsigned long long)decisions + 1}; SearchResult r;
+            SearchParams sp = {64, 60, (unsigned long long)decisions + 1, 0, 0}; SearchResult r;
             const double t0 = now();
             const int ok = search_decide(&b, &sp, &r);
             const double dt = now() - t0;

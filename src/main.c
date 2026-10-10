@@ -58,9 +58,13 @@ int main(void) {
         }
         char *end; const double remaining = strtod(line, &end);
         if (end == line) continue;
-        /* our turn: spend about remaining/30 + increment, as samples and iterations */
-        SearchParams sp = {128, 100, seed + (unsigned long long)decisions};
-        if (remaining < 20) { sp.samples = 32; sp.iterations = 30; }
+        /* our turn: about remaining/30 + 80% of the increment, capped at 10 s;
+         * a larger sample of P when there is time for it */
+        double budget = remaining / 30.0 + 0.8 * increment;
+        if (budget > 10.0) budget = 10.0;
+        if (budget > remaining * 0.3) budget = remaining * 0.3;
+        SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
+        if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
         SearchResult r; int ok = 0;
         if (b.count > 0) ok = search_decide(&b, &sp, &r);
         if (!ok) {
@@ -72,9 +76,9 @@ int main(void) {
         }
         if (!ok) { fprintf(stderr, "mist: no legal move\n"); break; }
         char uci[6]; move_to_uci(r.move, uci);
-        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d p=%.2f v=%+.3f clock=%.1f move=%s\n",
+        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f clock=%.1f move=%s\n",
                 ++decisions, b.count, b.overflowed ? "(capped)" : "", r.samples, r.our_moves, r.opponent_infosets, r.nodes,
-                r.probability, r.value, remaining, uci);
+                r.iterations, r.probability, r.value, remaining, uci);
         printf("move %s\n", uci); fflush(stdout);
         last = r.move; moved = 1;
     }

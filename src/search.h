@@ -15,15 +15,17 @@
 
 typedef struct {
     int samples;              /* |I| */
-    int iterations;           /* PCFR+ iterations */
+    int iterations;           /* PCFR+ iteration cap */
     unsigned long long seed;
+    double seconds;           /* PCFR+ time budget (0 = run all iterations) */
+    int material_only;        /* 1 = the material leaf (tests, comparison) */
 } SearchParams;
 
 typedef struct {
     Move move;
     double value;             /* root value for us under the last iterate, in [-1, 1] */
     double probability;       /* the move's weight in the last iterate */
-    int samples, our_moves, opponent_infosets, nodes;
+    int samples, our_moves, opponent_infosets, nodes, iterations;
 } SearchResult;
 
 /* Leaf value for `us` in [-1, 1]: material, squashed. */

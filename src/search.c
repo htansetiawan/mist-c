@@ -1,11 +1,14 @@
+#define _POSIX_C_SOURCE 199309L  /* clock_gettime under -std=c11 */
 /* mist-c: the two-ply belief subgame solved with PCFR+ (milestone M3). See search.h. */
 #include "search.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cfr.h"
+#include "eval.h"
 
 static const double kValue[6] = {1, 3, 3, 5, 9, 0};
 
@@ -95,7 +98,7 @@ int search_decide(const Belief *b, const SearchParams *params, SearchResult *out
                     double leaf;
                     if (king_square(&p, us) < 0) leaf = -1.0;                 /* they took our king */
                     else if (mover_left_king_capturable(&p)) leaf = 1.0;      /* they left theirs to us */
-                    else leaf = evaluate_material(&p, us);
+                    else leaf = params->material_only ? evaluate_material(&p, us) : evaluate(&p, us);
                     kids[r] = game_node(&g, NODE_TERMINAL, 0, -1, leaf);
                     unmake_move(&p, replies.moves[r], &v);
                 }
@@ -112,7 +115,18 @@ int search_decide(const Belief *b, const SearchParams *params, SearchResult *out
     }
     game_children(&g, root, chance_kids, chance_p, K);
     game_finalize(&g);
-    for (int t = 1; t <= params->iterations; ++t) pcfr_iteration(&g, t);
+    /* PCFR+ until the iteration cap or the time budget, whichever first; at
+     * least 10 iterations so the last iterate has moved off uniform. */
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+    int t = 1;
+    for (; t <= params->iterations; ++t) {
+        pcfr_iteration(&g, t);
+        if (params->seconds > 0 && t >= 10) {
+            struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
+            if ((t1.tv_sec - t0.tv_sec) + 1e-9 * (t1.tv_nsec - t0.tv_nsec) >= params->seconds) break;
+        }
+    }
+    out->iterations = t > params->iterations ? params->iterations : t;
     double *x = malloc(g.n_slots * sizeof(double));
     pcfr_current(&g, x);
     const int o = g.is_offset[root_infoset];
