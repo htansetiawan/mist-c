@@ -23,12 +23,6 @@ static unsigned long long next_random(unsigned long long *s) {
     return z ^ (z >> 31);
 }
 
-static unsigned long long view_key(int our_move, const char *view) {
-    unsigned long long h = 1469598103934665603ULL ^ (unsigned long long)our_move;
-    for (int i = 0; i < 64; ++i) { h ^= (unsigned char)view[i]; h *= 1099511628211ULL; }
-    return h | 1;
-}
-
 typedef struct { unsigned long long *keys; int *values; int size; } KeyMap;
 
 static int keymap_get(KeyMap *m, unsigned long long key, int fresh) {
@@ -79,8 +73,16 @@ int search_decide(const Belief *b, const SearchParams *params, SearchResult *out
             else if (mover_left_king_capturable(&p)) our_kids[a] = game_node(&g, NODE_TERMINAL, 0, -1, -1.0);
             else {
                 MoveList replies; generate_moves(&p, &replies);
+                /* The opponent's information state: its own history in this
+                 * position plus what it now sees. Our move is NOT part of it
+                 * (Astra, note 035): it must play the same strategy across our
+                 * root moves it cannot tell apart, and must not merge histories
+                 * that merely share the current view. */
                 observation(&p, them, view);
-                const unsigned long long key = view_key(a, view);
+                /* a belief built by hand (the front end's visible-position
+                 * fallback, tests) has no histories: treat them as empty */
+                const uint64_t hist = b->hist ? b->hist[idx[k]] : 0;
+                const unsigned long long key = history_mix(hist, view_hash(view)) | 1;
                 int infoset = keymap_get(&map, key, g.n_infosets);
                 if (infoset < 0) infoset = game_infoset(&g, 1, replies.count);
                 /* identical opponent views imply identical opponent moves; if a

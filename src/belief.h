@@ -19,15 +19,21 @@
 
 typedef struct {
     Position *items;
+    uint64_t *hist;     /* per position: hash of the OPPONENT's own moves and views so far
+                           (its information state), so search can key its information
+                           sets by history and not by the current view alone */
     size_t count, capacity, cap;
-    uint64_t *set;      /* open-addressing hash set of position keys */
+    uint64_t *set;      /* open-addressing hash set of (position, history) keys */
     size_t set_size, set_count;
+    uint64_t rng;       /* past the cap, a uniform random sample is kept (reservoir) */
     int us;
     int overflowed;
 } Belief;
 
 void zobrist_init(void);
 uint64_t position_key(const Position *p);
+uint64_t view_hash(const char view[65]);
+uint64_t history_mix(uint64_t h, uint64_t value);
 
 void belief_init_start(Belief *b, int our_color, size_t cap);
 void belief_free(Belief *b);

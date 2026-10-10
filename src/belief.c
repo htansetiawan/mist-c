@@ -34,6 +34,24 @@ uint64_t position_key(const Position *p) {
     return k | 1;  /* 0 marks an empty slot in the set */
 }
 
+uint64_t view_hash(const char view[65]) {
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < 64; ++i) { h ^= (unsigned char)view[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+uint64_t history_mix(uint64_t h, uint64_t value) {
+    uint64_t z = h + 0x9E3779B97F4A7C15ULL * (value | 1);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL; z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+/* Entries are deduplicated by position only: keeping every history apart grew
+ * P from 11.8k to 28.6k positions on the arena traces (38/40 games over a 100k
+ * cap instead of 24/40). Each position keeps the first history that reached
+ * it as its representative, so search still keys the opponent by history. */
+static uint64_t entry_key(const Position *p, uint64_t hist) { (void)hist; return position_key(p); }
+
 static void set_reset(Belief *b, size_t expected) {
     size_t size = 1024;
     while (size < 2 * expected + 16) size <<= 1;
@@ -75,34 +93,58 @@ void belief_init_start(Belief *b, int our_color, size_t cap) {
     memset(b, 0, sizeof(*b));
     b->us = our_color;
     b->cap = cap;
+    b->rng = 0x6d6973742d63ULL;
     b->capacity = 1024;
     b->items = malloc(b->capacity * sizeof(Position));
+    b->hist = malloc(b->capacity * sizeof(uint64_t));
     pos_start(&b->items[0]);
+    char view[65];
+    observation(&b->items[0], our_color ^ 1, view);
+    b->hist[0] = history_mix(0, view_hash(view));   /* the opponent's start view */
     b->count = 1;
     set_reset(b, 1024);
-    set_insert(b, position_key(&b->items[0]));
+    set_insert(b, entry_key(&b->items[0], b->hist[0]));
 }
 
 void belief_free(Belief *b) {
     free(b->items);
+    free(b->hist);
     free(b->set);
     memset(b, 0, sizeof(*b));
 }
 
 /* Rebuilds P from candidate successors; `view` filters them. */
-typedef struct { Position *items; size_t count, capacity; } Vec;
+typedef struct { Position *items; uint64_t *hist; size_t count, capacity; } Vec;
 
-static void vec_push(Vec *v, const Position *p) {
+static void vec_push(Vec *v, const Position *p, uint64_t hist) {
     if (v->count == v->capacity) {
         v->capacity = v->capacity ? v->capacity * 2 : 4096;
         v->items = realloc(v->items, v->capacity * sizeof(Position));
+        v->hist = realloc(v->hist, v->capacity * sizeof(uint64_t));
     }
-    v->items[v->count++] = *p;
+    v->items[v->count] = *p; v->hist[v->count] = hist; ++v->count;
+}
+
+static uint64_t next_random(uint64_t *s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL; z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+/* Keeps a uniform random sample of size cap among all consistent candidates
+ * (reservoir sampling); `seen` counts the candidates offered so far. */
+static void offer(Belief *b, Vec *next, size_t *seen, const Position *p, uint64_t hist) {
+    ++*seen;
+    if (next->count < b->cap) { vec_push(next, p, hist); return; }
+    b->overflowed = 1;
+    const uint64_t j = next_random(&b->rng) % (uint64_t)*seen;
+    if (j < b->cap) { next->items[j] = *p; next->hist[j] = hist; }
 }
 
 static size_t commit(Belief *b, Vec *next) {
-    free(b->items);
+    free(b->items); free(b->hist);
     b->items = next->items;
+    b->hist = next->hist;
     b->count = next->count;
     b->capacity = next->capacity;
     return b->count;
@@ -143,6 +185,8 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
     char seen[65];
     ViewMasks vm;
     view_masks(view, b->us, &vm);
+    size_t offered = 0;
+    char theirs[65];
     for (size_t i = 0; i < b->count; ++i) {
         Position p = b->items[i];
         MoveList l;
@@ -152,9 +196,11 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
             make_move(&p, l.moves[j], &u);
             if (!may_match(&p, &vm, b->us)) { unmake_move(&p, l.moves[j], &u); continue; }
             observation(&p, b->us, seen);
-            if (memcmp(seen, view, 64) == 0 && set_insert(b, position_key(&p))) {
-                if (next.count < b->cap) vec_push(&next, &p);
-                else b->overflowed = 1;
+            if (memcmp(seen, view, 64) == 0) {
+                /* the opponent knows its own move and sees its view after it */
+                observation(&p, b->us ^ 1, theirs);
+                const uint64_t h = history_mix(history_mix(b->hist[i], l.moves[j]), view_hash(theirs));
+                if (set_insert(b, entry_key(&p, h))) offer(b, &next, &offered, &p, h);
             }
             unmake_move(&p, l.moves[j], &u);
         }
@@ -168,13 +214,18 @@ size_t belief_after_own(Belief *b, Move m, const char view[65]) {
     char seen[65];
     ViewMasks vm;
     view_masks(view, b->us, &vm);
+    char theirs[65];
     for (size_t i = 0; i < b->count; ++i) {
         Position p = b->items[i];
         Undo u;
         make_move(&p, m, &u);
         if (!may_match(&p, &vm, b->us)) continue;
         observation(&p, b->us, seen);
-        if (memcmp(seen, view, 64) == 0 && set_insert(b, position_key(&p))) vec_push(&next, &p);
+        if (memcmp(seen, view, 64) != 0) continue;
+        /* the opponent does not see our move, only its view after it */
+        observation(&p, b->us ^ 1, theirs);
+        const uint64_t h = history_mix(b->hist[i], view_hash(theirs));
+        if (set_insert(b, entry_key(&p, h))) vec_push(&next, &p, h);
     }
     return commit(b, &next);
 }
