@@ -1,13 +1,19 @@
-/* mist-c: exact belief (milestone M2).
+/* mist-c: exact belief (milestone M2), weighted.
  *
  * P = every position consistent with our observation history (paper, Section 3:
  * "the full set P of possible positions given the observations"). Updated
  * exactly: after the opponent moves, every position in P is expanded by every
  * opponent move and kept iff our view of the result equals the view received;
  * after our own move, the move is applied to every position and filtered the
- * same way. Positions are deduplicated by a Zobrist hash. If P would exceed
- * `cap`, the excess is dropped and `overflowed` is set (the regime in which an
- * enumerating engine can lose the true board).
+ * same way. A move that leaves the mover's king capturable ends the game (the
+ * referee's rule), so the game going on rules such positions out.
+ *
+ * Each position carries a log-weight: the opponent move model (movemodel.h)
+ * scores every hidden opponent move, so a position reached by natural moves
+ * outweighs one reached by odd ones; positions reached by several histories
+ * add their weights. Past `cap`, positions are kept by weighted sampling
+ * without replacement (the true board is the likeliest to survive) and
+ * `overflowed` is set. Search samples its worlds by weight (belief_sample).
  */
 #ifndef FOW_BELIEF_H
 #define FOW_BELIEF_H
@@ -22,7 +28,9 @@ typedef struct {
     uint64_t *hist;     /* per position: hash of the OPPONENT's own moves and views so far
                            (its information state), so search can key its information
                            sets by history and not by the current view alone */
+    float *logw;        /* per position: log-weight (NULL = uniform) */
     size_t count, capacity, cap;
+    Move last_own;      /* our last move, for the model's recapture feature */
     uint64_t *set;      /* open-addressing hash set of (position, history) keys */
     size_t set_size, set_count;
     uint64_t rng;       /* past the cap, a uniform random sample is kept (reservoir) */
@@ -41,6 +49,13 @@ void belief_free(Belief *b);
 size_t belief_after_opponent(Belief *b, const char view[65]);
 size_t belief_after_own(Belief *b, Move m, const char view[65]);
 int belief_contains(const Belief *b, const Position *p);
+/* The weight share of `p` in P (0 if absent). */
+double belief_share(const Belief *b, const Position *p);
+
+/* K draws with replacement in proportion to the weights (all of P when it
+ * has at most K positions): writes distinct indices and their probabilities
+ * (multiplicity / K, or the normalised weights), returns how many. */
+int belief_sample(const Belief *b, int K, uint64_t *rng, int *idx, double *prob);
 
 /* Rebuilds P from the current view alone, for when the capped belief has
  * lost every position (past the cap the reservoir can drop the true board).

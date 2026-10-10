@@ -188,16 +188,14 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     Tree t; memset(&t, 0, sizeof(t));
     game_init(&t.g); t.us = b->us; t.rng = params->seed ^ 0x67746366ULL;
-    /* I: distinct uniform samples of P */
-    const int K = params->samples < (int)b->count ? params->samples : (int)b->count;
-    int *idx = malloc(b->count * sizeof(int));
-    for (size_t i = 0; i < b->count; ++i) idx[i] = (int)i;
-    for (int i = 0; i < K; ++i) {
-        const int j = i + (int)(next_random(&t.rng) % (unsigned long long)(b->count - i));
-        const int s = idx[i]; idx[i] = idx[j]; idx[j] = s;
-    }
+    /* I: positions of P drawn by weight (belief_sample), each with its share */
+    const int draws = params->samples > 0 ? params->samples : 1;
+    int *idx = malloc(draws * sizeof(int));
+    double *share = malloc(draws * sizeof(double));
+    uint64_t draw_rng = params->seed ^ 0x5eedULL;
+    const int K = belief_sample(b, draws, &draw_rng, idx, share);
     MoveList ours; generate_moves(&b->items[idx[0]], &ours);
-    if (ours.count == 0) { free(idx); game_free(&t.g); return 0; }
+    if (ours.count == 0) { free(idx); free(share); game_free(&t.g); return 0; }
     if (params->avoid_count > 0) {
         MoveList kept; kept.count = 0;
         for (int a = 0; a < ours.count; ++a) {
@@ -219,7 +217,7 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
         const int node = game_node(&t.g, NODE_TERMINAL, 0, -1, 0.0);
         const int count = build_children(&t, p, hist, kids, &ours);
         game_expand_leaf(&t.g, node, 0, root_I, kids, count);
-        chance_kids[k] = node; chance_p[k] = 1.0 / K;
+        chance_kids[k] = node; chance_p[k] = share[k];
     }
     game_children(&t.g, root, chance_kids, chance_p, K);
     game_finalize(&t.g);
@@ -254,7 +252,7 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     out->value = game_value(&t.g, x);
     out->samples = K; out->our_moves = ours.count; out->opponent_infosets = t.g.n_infosets; out->nodes = t.g.n_nodes;
     out->iterations = iteration;
-    free(x); free(idx); free(chance_kids); free(chance_p);
+    free(x); free(idx); free(share); free(chance_kids); free(chance_p);
     free(t.leaves); free(t.leaf_of); free(t.keys); free(t.vals); free(t.visits);
     game_free(&t.g);
     (void)grown;

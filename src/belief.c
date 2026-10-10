@@ -1,8 +1,11 @@
 /* mist-c: exact belief (milestone M2). See belief.h. */
 #include "belief.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "movemodel.h"
 
 static uint64_t z_piece[2][6][64], z_side, z_castle[64], z_ep[64];
 
@@ -97,6 +100,8 @@ void belief_init_start(Belief *b, int our_color, size_t cap) {
     b->capacity = 1024;
     b->items = malloc(b->capacity * sizeof(Position));
     b->hist = malloc(b->capacity * sizeof(uint64_t));
+    b->logw = malloc(b->capacity * sizeof(float));
+    b->logw[0] = 0;
     pos_start(&b->items[0]);
     char view[65];
     observation(&b->items[0], our_color ^ 1, view);
@@ -109,20 +114,22 @@ void belief_init_start(Belief *b, int our_color, size_t cap) {
 void belief_free(Belief *b) {
     free(b->items);
     free(b->hist);
+    free(b->logw);
     free(b->set);
     memset(b, 0, sizeof(*b));
 }
 
-/* Rebuilds P from candidate successors; `view` filters them. */
-typedef struct { Position *items; uint64_t *hist; size_t count, capacity; } Vec;
+/* The next P under construction. */
+typedef struct { Position *items; uint64_t *hist; float *logw; size_t count, capacity; } Vec;
 
-static void vec_push(Vec *v, const Position *p, uint64_t hist) {
+static void vec_push(Vec *v, const Position *p, uint64_t hist, float logw) {
     if (v->count == v->capacity) {
         v->capacity = v->capacity ? v->capacity * 2 : 4096;
         v->items = realloc(v->items, v->capacity * sizeof(Position));
         v->hist = realloc(v->hist, v->capacity * sizeof(uint64_t));
+        v->logw = realloc(v->logw, v->capacity * sizeof(float));
     }
-    v->items[v->count] = *p; v->hist[v->count] = hist; ++v->count;
+    v->items[v->count] = *p; v->hist[v->count] = hist; v->logw[v->count] = logw; ++v->count;
 }
 
 static uint64_t next_random(uint64_t *s) {
@@ -131,23 +138,39 @@ static uint64_t next_random(uint64_t *s) {
     return z ^ (z >> 31);
 }
 
-/* Keeps a uniform random sample of size cap among all consistent candidates
- * (reservoir sampling); `seen` counts the candidates offered so far. */
-static void offer(Belief *b, Vec *next, size_t *seen, const Position *p, uint64_t hist) {
-    ++*seen;
-    if (next->count < b->cap) { vec_push(next, p, hist); return; }
-    b->overflowed = 1;
-    const uint64_t j = next_random(&b->rng) % (uint64_t)*seen;
-    if (j < b->cap) { next->items[j] = *p; next->hist[j] = hist; }
-}
+static double unit_open(uint64_t *s) { return ((double)(next_random(s) >> 11) + 0.5) * (1.0 / 9007199254740992.0); }
 
+/* Replaces P by `next`, log-weights shifted so the largest is 0. */
 static size_t commit(Belief *b, Vec *next) {
-    free(b->items); free(b->hist);
+    free(b->items); free(b->hist); free(b->logw);
+    float top = -INFINITY;
+    for (size_t i = 0; i < next->count; ++i) if (next->logw[i] > top) top = next->logw[i];
+    for (size_t i = 0; i < next->count; ++i) next->logw[i] -= top;
     b->items = next->items;
     b->hist = next->hist;
+    b->logw = next->logw;
     b->count = next->count;
     b->capacity = next->capacity;
     return b->count;
+}
+
+/* Settings, read once: MIST_MODEL=0 weighs every consistent position alike;
+ * MIST_MODEL_TEMP scales the model's log-likelihoods (default 1); the full
+ * model (attack features) is used while |P| <= MIST_MODEL_FULL_BELOW (default
+ * 10000), the cheap one above; MIST_PRUNE_CAPTURABLE=0 keeps positions the
+ * referee's rule excludes. */
+static int settings_read = 0, model_on = 1, prune_capturable = 1;
+static float model_temp = 1.0f;
+static size_t model_full_below = 10000;
+
+static void read_settings(void) {
+    if (settings_read) return;
+    settings_read = 1;
+    const char *e;
+    if ((e = getenv("MIST_MODEL")) && e[0] == '0') model_on = 0;
+    if ((e = getenv("MIST_MODEL_TEMP"))) model_temp = (float)atof(e);
+    if ((e = getenv("MIST_MODEL_FULL_BELOW"))) model_full_below = (size_t)strtoull(e, NULL, 10);
+    if ((e = getenv("MIST_PRUNE_CAPTURABLE")) && e[0] == '0') prune_capturable = 0;
 }
 
 /* What a view pins down, as bitboards: necessary conditions checked before the
@@ -179,38 +202,121 @@ static int may_match(const Position *p, const ViewMasks *m, int us) {
     return 1;
 }
 
+/* A consistent successor found in the first pass: rebuilt in the second only
+ * if it is kept. */
+typedef struct { uint64_t key; uint32_t parent; Move move; float logw; } Candidate;
+
+static int by_key(const void *a, const void *b) {
+    const uint64_t x = ((const Candidate *)a)->key, y = ((const Candidate *)b)->key;
+    return x < y ? -1 : x > y;
+}
+
+typedef struct { double key; uint32_t index; } Ranked;
+
+static int by_rank(const void *a, const void *b) {
+    const double x = ((const Ranked *)a)->key, y = ((const Ranked *)b)->key;
+    return x < y ? -1 : x > y;
+}
+
+static float log_add(float a, float b) {
+    if (a < b) { const float t = a; a = b; b = t; }
+    return a + log1pf(expf(b - a));
+}
+
 size_t belief_after_opponent(Belief *b, const char view[65]) {
-    Vec next = {0};
-    set_reset(b, b->count * 4);
-    char seen[65];
+    read_settings();
     ViewMasks vm;
     view_masks(view, b->us, &vm);
-    size_t offered = 0;
-    char theirs[65];
+    Candidate *cand = NULL;
+    size_t n = 0, cap_cand = 0;
+    char seen[65];
+    const int full = b->count <= model_full_below;
+    float logit[256];
+    /* pass 1: every consistent successor, its key and log-weight */
     for (size_t i = 0; i < b->count; ++i) {
         Position p = b->items[i];
         MoveList l;
         generate_moves(&p, &l);
+        float log_z = 0;
+        if (model_on) {
+            move_logits(&p, &l, b->last_own, full, logit);
+            float top = -INFINITY;
+            for (int j = 0; j < l.count; ++j) if (logit[j] > top) top = logit[j];
+            double z = 0;
+            for (int j = 0; j < l.count; ++j) z += exp((double)(logit[j] - top));
+            log_z = top + (float)log(z);
+        }
+        const float base = b->logw ? b->logw[i] : 0.0f;
         for (int j = 0; j < l.count; ++j) {
             Undo u;
             make_move(&p, l.moves[j], &u);
-            if (!may_match(&p, &vm, b->us)) { unmake_move(&p, l.moves[j], &u); continue; }
-            observation(&p, b->us, seen);
-            if (memcmp(seen, view, 64) == 0) {
-                /* the opponent knows its own move and sees its view after it */
-                observation(&p, b->us ^ 1, theirs);
-                const uint64_t h = history_mix(history_mix(b->hist[i], l.moves[j]), view_hash(theirs));
-                if (set_insert(b, entry_key(&p, h))) offer(b, &next, &offered, &p, h);
+            /* the referee ends the game on a move that leaves the mover's king capturable */
+            if (may_match(&p, &vm, b->us) && !(prune_capturable && mover_left_king_capturable(&p))) {
+                observation(&p, b->us, seen);
+                if (memcmp(seen, view, 64) == 0) {
+                    if (n == cap_cand) { cap_cand = cap_cand ? 2 * cap_cand : 1 << 14; cand = realloc(cand, cap_cand * sizeof(Candidate)); }
+                    cand[n].key = position_key(&p);
+                    cand[n].parent = (uint32_t)i;
+                    cand[n].move = l.moves[j];
+                    cand[n].logw = base + (model_on ? model_temp * (logit[j] - log_z) : 0.0f);
+                    ++n;
+                }
             }
             unmake_move(&p, l.moves[j], &u);
         }
     }
+    /* positions reached by several histories: weights add; the heaviest
+     * history represents the position (search keys the opponent by it) */
+    if (n > 1) qsort(cand, n, sizeof(Candidate), by_key);
+    size_t m = 0;
+    for (size_t i = 0; i < n; ) {
+        size_t j = i + 1;
+        Candidate best = cand[i];
+        float total = cand[i].logw;
+        for (; j < n && cand[j].key == cand[i].key; ++j) {
+            total = log_add(total, cand[j].logw);
+            if (cand[j].logw > best.logw) best = cand[j];
+        }
+        best.logw = total;
+        cand[m++] = best;
+        i = j;
+    }
+    /* past the cap: weighted sampling without replacement (exponential keys) */
+    size_t keep = m;
+    uint32_t *chosen = malloc((m ? m : 1) * sizeof(uint32_t));
+    if (m > b->cap) {
+        b->overflowed = 1;
+        Ranked *r = malloc(m * sizeof(Ranked));
+        for (size_t i = 0; i < m; ++i) { r[i].key = log(-log(unit_open(&b->rng))) - cand[i].logw; r[i].index = (uint32_t)i; }
+        qsort(r, m, sizeof(Ranked), by_rank);
+        keep = b->cap;
+        for (size_t i = 0; i < keep; ++i) chosen[i] = r[i].index;
+        free(r);
+    } else {
+        for (size_t i = 0; i < m; ++i) chosen[i] = (uint32_t)i;
+    }
+    /* pass 2: rebuild the kept positions with their histories */
+    Vec next = {0};
+    char theirs[65];
+    for (size_t k = 0; k < keep; ++k) {
+        const Candidate *c = &cand[chosen[k]];
+        Position p = b->items[c->parent];
+        Undo u;
+        make_move(&p, c->move, &u);
+        /* the opponent knows its own move and sees its view after it */
+        observation(&p, b->us ^ 1, theirs);
+        const uint64_t h = history_mix(history_mix(b->hist ? b->hist[c->parent] : 0, c->move), view_hash(theirs));
+        vec_push(&next, &p, h, c->logw);
+    }
+    free(chosen);
+    free(cand);
     return commit(b, &next);
 }
 
 size_t belief_after_own(Belief *b, Move m, const char view[65]) {
+    read_settings();
+    b->last_own = m;
     Vec next = {0};
-    set_reset(b, b->count);
     char seen[65];
     ViewMasks vm;
     view_masks(view, b->us, &vm);
@@ -220,12 +326,15 @@ size_t belief_after_own(Belief *b, Move m, const char view[65]) {
         Undo u;
         make_move(&p, m, &u);
         if (!may_match(&p, &vm, b->us)) continue;
+        /* the referee ends the game on a move that leaves the mover's king
+         * capturable: the game went on, so our move did not */
+        if (prune_capturable && mover_left_king_capturable(&p)) continue;
         observation(&p, b->us, seen);
         if (memcmp(seen, view, 64) != 0) continue;
         /* the opponent does not see our move, only its view after it */
         observation(&p, b->us ^ 1, theirs);
-        const uint64_t h = history_mix(b->hist[i], view_hash(theirs));
-        if (set_insert(b, entry_key(&p, h))) vec_push(&next, &p, h);
+        const uint64_t h = history_mix(b->hist ? b->hist[i] : 0, view_hash(theirs));
+        vec_push(&next, &p, h, b->logw ? b->logw[i] : 0.0f);   /* distinct positions stay distinct */
     }
     return commit(b, &next);
 }
@@ -235,6 +344,51 @@ int belief_contains(const Belief *b, const Position *p) {
     for (size_t i = 0; i < b->count; ++i)
         if (position_key(&b->items[i]) == key) return 1;
     return 0;
+}
+
+double belief_share(const Belief *b, const Position *p) {
+    const uint64_t key = position_key(p);
+    double total = 0, mine = 0;
+    for (size_t i = 0; i < b->count; ++i) {
+        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        total += w;
+        if (position_key(&b->items[i]) == key) mine += w;
+    }
+    return total > 0 ? mine / total : 0;
+}
+
+static int by_index(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+
+int belief_sample(const Belief *b, int K, uint64_t *rng, int *idx, double *prob) {
+    if (b->count == 0 || K <= 0) return 0;
+    if (b->count <= (size_t)K) {
+        double total = 0;
+        for (size_t i = 0; i < b->count; ++i) { idx[i] = (int)i; prob[i] = b->logw ? exp((double)b->logw[i]) : 1.0; total += prob[i]; }
+        for (size_t i = 0; i < b->count; ++i) prob[i] /= total;
+        return (int)b->count;
+    }
+    /* K draws with replacement by weight: cumulative weights, binary search */
+    double *cum = malloc(b->count * sizeof(double));
+    double total = 0;
+    for (size_t i = 0; i < b->count; ++i) { total += b->logw ? exp((double)b->logw[i]) : 1.0; cum[i] = total; }
+    for (int k = 0; k < K; ++k) {
+        const double x = unit_open(rng) * total;
+        size_t lo = 0, hi = b->count - 1;
+        while (lo < hi) { const size_t mid = (lo + hi) / 2; if (cum[mid] < x) lo = mid + 1; else hi = mid; }
+        idx[k] = (int)lo;
+    }
+    free(cum);
+    qsort(idx, (size_t)K, sizeof(int), by_index);
+    int distinct = 0;
+    for (int k = 0; k < K; ) {
+        int j = k + 1;
+        while (j < K && idx[j] == idx[k]) ++j;
+        idx[distinct] = idx[k];
+        prob[distinct] = (double)(j - k) / K;
+        ++distinct;
+        k = j;
+    }
+    return distinct;
 }
 
 /* --- when the capped belief has lost every position ------------------------ */
@@ -342,9 +496,9 @@ size_t belief_resample(Belief *b, const char view[65], const int their[6], bb_t 
         if (memcmp(seen, view, 64) != 0) continue;
         if (!set_insert(b, position_key(&p))) continue;
         observation(&p, them, theirs);
-        vec_push(&next, &p, history_mix(0x7265, view_hash(theirs)));
+        vec_push(&next, &p, history_mix(0x7265, view_hash(theirs)), 0.0f);
     }
-    if (next.count == 0) { free(next.items); free(next.hist); return b->count; }
+    if (next.count == 0) { free(next.items); free(next.hist); free(next.logw); return b->count; }
     b->overflowed = 1;
     return commit(b, &next);
 }

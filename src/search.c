@@ -20,12 +20,6 @@ double evaluate_material(const Position *p, int us) {
     return tanh(d / 6.0);
 }
 
-static unsigned long long next_random(unsigned long long *s) {
-    unsigned long long z = (*s += 0x9E3779B97F4A7C15ULL);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL; z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
 typedef struct { unsigned long long *keys; int *values; int size; } KeyMap;
 
 static int keymap_get(KeyMap *m, unsigned long long key, int fresh) {
@@ -42,18 +36,15 @@ int search_decide(const Belief *b, const SearchParams *params, SearchResult *out
     memset(out, 0, sizeof(*out));
     if (b->count == 0) return 0;
     const int us = b->us, them = us ^ 1;
-    /* I: K distinct positions of P, uniformly (partial Fisher-Yates) */
-    const int K = params->samples < (int)b->count ? params->samples : (int)b->count;
-    int *idx = malloc(b->count * sizeof(int));
-    for (size_t i = 0; i < b->count; ++i) idx[i] = (int)i;
-    unsigned long long rng = params->seed ^ 0x5eedULL;
-    for (int i = 0; i < K; ++i) {
-        const int j = i + (int)(next_random(&rng) % (unsigned long long)(b->count - i));
-        const int t = idx[i]; idx[i] = idx[j]; idx[j] = t;
-    }
+    /* I: positions of P drawn by weight (belief_sample), each with its share */
+    const int draws = params->samples > 0 ? params->samples : 1;
+    int *idx = malloc(draws * sizeof(int));
+    double *share = malloc(draws * sizeof(double));
+    uint64_t draw_rng = params->seed ^ 0x5eedULL;
+    const int K = belief_sample(b, draws, &draw_rng, idx, share);
     MoveList ours;
     generate_moves(&b->items[idx[0]], &ours);
-    if (ours.count == 0) { free(idx); return 0; }
+    if (ours.count == 0) { free(idx); free(share); return 0; }
 
     Game g; game_init(&g);
     const int root_infoset = game_infoset(&g, 0, ours.count);
@@ -67,7 +58,7 @@ int search_decide(const Belief *b, const SearchParams *params, SearchResult *out
     for (int k = 0; k < K; ++k) {
         Position p = b->items[idx[k]];
         const int our_node = game_node(&g, NODE_PLAYER, 0, root_infoset, 0.0);
-        chance_kids[k] = our_node; chance_p[k] = 1.0 / K;
+        chance_kids[k] = our_node; chance_p[k] = share[k];
         int our_kids[256];
         for (int a = 0; a < ours.count; ++a) {
             Undo u; const Move m = ours.moves[a];
@@ -136,7 +127,7 @@ int search_decide(const Belief *b, const SearchParams *params, SearchResult *out
     out->probability = x[o + best];
     out->value = game_value(&g, x);
     out->samples = K; out->our_moves = ours.count; out->opponent_infosets = g.n_infosets - 1; out->nodes = g.n_nodes;
-    free(x); free(kids); free(map.keys); free(map.values); free(chance_kids); free(chance_p); free(idx);
+    free(x); free(kids); free(map.keys); free(map.values); free(chance_kids); free(chance_p); free(idx); free(share);
     game_free(&g);
     return 1;
 }
