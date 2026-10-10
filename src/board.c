@@ -1,4 +1,4 @@
-/* fowsearch-c: Fog of War chess rules (milestone M1). See fow.h. */
+/* mist-c: Fog of War chess rules (milestone M1). See fow.h. */
 #include "fow.h"
 
 #include <string.h>

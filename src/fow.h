@@ -1,4 +1,4 @@
-/* fowsearch-c: Fog of War chess rules (milestone M1).
+/* mist-c: Fog of War chess rules (milestone M1).
  *
  * Rules as in Zhang & Sandholm (Obscuro), Appendix A: the king is captured,
  * there is no check, castling ignores attacks, and each side observes the

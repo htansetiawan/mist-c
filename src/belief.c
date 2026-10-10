@@ -1,4 +1,4 @@
-/* fowsearch-c: exact belief (milestone M2). See belief.h. */
+/* mist-c: exact belief (milestone M2). See belief.h. */
 #include "belief.h"
 
 #include <stdlib.h>

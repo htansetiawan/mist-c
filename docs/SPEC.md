@@ -1,4 +1,4 @@
-# fowsearch-c: specification (clean-room, from the paper only)
+# mist-c: specification (clean-room, from the paper only)
 
 Source: B. H. Zhang and T. Sandholm, *General search techniques without common knowledge for imperfect-information games, and application to superhuman Fog of War chess* (Obscuro), arXiv:2506.01242v2 / ICLR 2026. This implementation is written from the paper alone. It does not use or translate code from any other implementation (in particular not from GPL-licensed ones).
 

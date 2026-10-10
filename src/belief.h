@@ -1,4 +1,4 @@
-/* fowsearch-c: exact belief (milestone M2).
+/* mist-c: exact belief (milestone M2).
  *
  * P = every position consistent with our observation history (paper, Section 3:
  * "the full set P of possible positions given the observations"). Updated
