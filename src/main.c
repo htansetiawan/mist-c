@@ -51,6 +51,9 @@ int main(void) {
     const size_t cap = getenv("MIST_CAP") ? (size_t)strtoull(getenv("MIST_CAP"), NULL, 10) : 200000;
     const double max_seconds = getenv("MIST_MAX_SECONDS") ? atof(getenv("MIST_MAX_SECONDS")) : 10.0;
     const int repeat_lead = getenv("MIST_REPEAT_LEAD") ? atoi(getenv("MIST_REPEAT_LEAD")) : 2;
+    /* decision replay (tests): our first decisions play these moves (comma
+     * separated UCI, as the game went) and the next one is searched */
+    const char *forced = getenv("MIST_FORCE_MOVES");
     Belief b; belief_init_start(&b, us, cap);
     static Front front;
     front_init(&front, us);
@@ -102,6 +105,22 @@ int main(void) {
             }
         }
         SearchResult r; int ok = 0;
+        memset(&r, 0, sizeof r);
+        if (forced && *forced) {
+            char want[8] = ""; int k = 0;
+            while (forced[k] && forced[k] != ',' && k < 7) { want[k] = forced[k]; ++k; }
+            forced += forced[k] == ',' ? k + 1 : k;
+            for (int i = 0; i < allowed.count && !ok; ++i) { char u[6]; move_to_uci(allowed.moves[i], u); if (strcmp(u, want) == 0) { r.move = allowed.moves[i]; ok = 1; } }
+            if (!ok && b.count > 0) {   /* e.g. en passant the view cannot prove */
+                MoveList l; generate_moves(&b.items[0], &l);
+                for (int i = 0; i < l.count && !ok; ++i) { char u[6]; move_to_uci(l.moves[i], u); if (strcmp(u, want) == 0) { r.move = l.moves[i]; ok = 1; } }
+            }
+            if (!ok) { fprintf(stderr, "mist: forced move %s not found\n", want); break; }
+            printf("move %s\n", want); fflush(stdout);
+            front_play(&front, view, r.move);
+            last = r.move; moved = 1; ++decisions;
+            continue;
+        }
         /* GT-CFR by default (MIST_SEARCH=twoply for the fixed two-ply search) */
         const int twoply = getenv("MIST_SEARCH") && strcmp(getenv("MIST_SEARCH"), "twoply") == 0;
         if (b.count > 0) ok = twoply ? search_decide(&b, &sp, &r) : gtcfr_decide(&b, &gp, &r);
@@ -131,6 +150,7 @@ int main(void) {
         printf("move %s\n", uci); fflush(stdout);
         front_play(&front, view, r.move);
         last = r.move; moved = 1;
+        if (forced) break;   /* decision replay: one searched decision */
     }
     belief_free(&b);
     return 0;
