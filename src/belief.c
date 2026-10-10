@@ -339,6 +339,35 @@ size_t belief_after_own(Belief *b, Move m, const char view[65]) {
     return commit(b, &next);
 }
 
+static int by_index_u32(const void *a, const void *b) {
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+size_t belief_shrink(Belief *b, size_t target) {
+    if (b->count <= target) return b->count;
+    Ranked *r = malloc(b->count * sizeof(Ranked));
+    for (size_t i = 0; i < b->count; ++i) {
+        r[i].key = log(-log(unit_open(&b->rng))) - (b->logw ? b->logw[i] : 0.0f);
+        r[i].index = (uint32_t)i;
+    }
+    qsort(r, b->count, sizeof(Ranked), by_rank);
+    uint32_t *keep = malloc(target * sizeof(uint32_t));
+    for (size_t k = 0; k < target; ++k) keep[k] = r[k].index;
+    free(r);
+    /* in their old order, so compacting in place never overwrites a kept one */
+    qsort(keep, target, sizeof(uint32_t), by_index_u32);
+    for (size_t k = 0; k < target; ++k) {
+        b->items[k] = b->items[keep[k]];
+        if (b->hist) b->hist[k] = b->hist[keep[k]];
+        if (b->logw) b->logw[k] = b->logw[keep[k]];
+    }
+    free(keep);
+    b->count = target;
+    b->overflowed = 1;
+    return target;
+}
+
 int belief_contains(const Belief *b, const Position *p) {
     uint64_t key = position_key(p);
     for (size_t i = 0; i < b->count; ++i)

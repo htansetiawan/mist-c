@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L  /* clock_gettime under -std=c11 */
 /* mist-c: referee-protocol front end (milestone M5).
  *
  * The course referee sends "fow", then "<w|b> <base> <increment>"; the bot
@@ -12,11 +13,16 @@
  * one legal on every board in it): v1 lost two games by pushing a pawn into an
  * unseen piece after its belief ran empty. When ahead, moves that would make
  * our pieces stand as they already have twice are left out: v1 drew three
- * games by repetition, two of them seven points up.
+ * games by repetition, two of them seven points up. The opponent update is
+ * paid from our clock: P is first thinned to what half the move's budget can
+ * expand (v3 lost three games on time, its 200,000-position updates taking
+ * 3-4 s against a 2 s increment).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <math.h>
 
 #include "front.h"
 #include "gtcfr.h"
@@ -41,6 +47,36 @@ static int legal_everywhere(const Belief *b, Move m) {
     return b->count > 0;
 }
 
+/* The weight share of P on which `m` leaves our king capturable (the view
+ * proves `m` legal on every board of P, so it can be played on each). */
+static double king_risk(const Belief *b, Move m) {
+    double total = 0, lost = 0;
+    for (size_t i = 0; i < b->count; ++i) {
+        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        Position p = b->items[i];
+        Undo u;
+        make_move(&p, m, &u);
+        total += w;
+        if (mover_left_king_capturable(&p)) lost += w;
+    }
+    return total > 0 ? lost / total : 0;
+}
+
+static double now_seconds(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
+}
+
+/* about remaining/30 + 80% of the increment, capped at max_seconds and at 30%
+ * of what is left */
+static double move_budget(double remaining, double increment, double max_seconds) {
+    double budget = remaining / 30.0 + 0.8 * increment;
+    if (budget > max_seconds) budget = max_seconds;
+    if (budget > remaining * 0.3) budget = remaining * 0.3;
+    return budget;
+}
+
 int main(void) {
     char line[256];
     if (!fgets(line, sizeof line, stdin) || strncmp(line, "fow", 3) != 0) return 0;
@@ -63,13 +99,28 @@ int main(void) {
     int views = 0, moved = 0, decisions = 0, rebuilds = 0;
     Move last = 0;
     unsigned long long seed = getenv("FOW_SEED") ? strtoull(getenv("FOW_SEED"), NULL, 10) : 1;
+    double clock_left = base;       /* our clock when the next view comes, from the last reading */
+    double per_position = 2e-5;     /* seconds the opponent update costs per position of P, measured */
+    double view_at = now_seconds(); /* our clock runs from the view before our turn */
     while (fgets(line, sizeof line, stdin)) {
         line[strcspn(line, "\r\n")] = '\0';
         if (is_view(line)) {
             memcpy(view, line, 65);
+            view_at = now_seconds();
             if (views++ > 0 && b.count > 0) {
                 if (moved) belief_after_own(&b, last, view);
-                else belief_after_opponent(&b, view);
+                else {
+                    const size_t afford = (size_t)(0.5 * move_budget(clock_left, increment, max_seconds) / per_position);
+                    if (b.count > afford && b.count > 2000) {
+                        const size_t was = b.count;
+                        belief_shrink(&b, afford > 2000 ? afford : 2000);
+                        fprintf(stderr, "mist: clock %.1f s: P thinned from %zu to %zu before the update\n", clock_left, was, b.count);
+                    }
+                    const size_t parents = b.count;
+                    const double started = now_seconds();
+                    belief_after_opponent(&b, view);
+                    if (parents >= 1000) per_position = 0.5 * per_position + 0.5 * (now_seconds() - started) / (double)parents;
+                }
             }
             front_see(&front, view);
             if (b.count == 0 && !moved && views > 1) {
@@ -80,13 +131,12 @@ int main(void) {
             moved = 0;
             continue;
         }
-        char *end; const double remaining = strtod(line, &end);
+        char *end; const double reported = strtod(line, &end);
         if (end == line) continue;
-        /* our turn: about remaining/30 + 80% of the increment, capped at 10 s;
-         * a larger sample of P when there is time for it */
-        double budget = remaining / 30.0 + 0.8 * increment;
-        if (budget > max_seconds) budget = max_seconds;
-        if (budget > remaining * 0.3) budget = remaining * 0.3;
+        /* our turn; the clock ran while we updated P. A larger sample of P
+         * when there is time for it */
+        const double remaining = reported - (now_seconds() - view_at);
+        const double budget = move_budget(remaining, increment, max_seconds);
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
         GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions, NULL, 0};
@@ -116,7 +166,13 @@ int main(void) {
                 for (int i = 0; i < l.count && !ok; ++i) { char u[6]; move_to_uci(l.moves[i], u); if (strcmp(u, want) == 0) { r.move = l.moves[i]; ok = 1; } }
             }
             if (!ok) { fprintf(stderr, "mist: forced move %s not found\n", want); break; }
+            if (getenv("MIST_RISK")) {   /* diagnostics: the played move's risk on P, and the least */
+                double least = 1;
+                for (int i = 0; i < allowed.count; ++i) { const double x = king_risk(&b, allowed.moves[i]); if (x < least) least = x; }
+                fprintf(stderr, "mist: played %s risk %.4f least %.4f |P|=%zu%s\n", want, king_risk(&b, r.move), least, b.count, b.overflowed ? "(capped)" : "");
+            }
             printf("move %s\n", want); fflush(stdout);
+            clock_left = reported - (now_seconds() - view_at) + increment;
             front_play(&front, view, r.move);
             last = r.move; moved = 1; ++decisions;
             continue;
@@ -144,10 +200,17 @@ int main(void) {
         }
         if (!ok) { fprintf(stderr, "mist: no legal move\n"); break; }
         char uci[6]; move_to_uci(r.move, uci);
+        if (getenv("MIST_RISK")) {   /* diagnostics: each allowed move's risk on P */
+            for (int i = 0; i < allowed.count; ++i) {
+                char u[6]; move_to_uci(allowed.moves[i], u);
+                fprintf(stderr, "mist: risk %s %.4f%s\n", u, king_risk(&b, allowed.moves[i]), allowed.moves[i] == r.move ? " (chosen)" : "");
+            }
+        }
         fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f move=%s\n",
                 ++decisions, b.count, b.overflowed ? "(capped)" : "", r.samples, r.our_moves, r.opponent_infosets, r.nodes,
                 r.iterations, r.probability, r.value, lead, remaining, uci);
         printf("move %s\n", uci); fflush(stdout);
+        clock_left = reported - (now_seconds() - view_at) + increment;
         front_play(&front, view, r.move);
         last = r.move; moved = 1;
         if (forced) break;   /* decision replay: one searched decision */
