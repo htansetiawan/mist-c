@@ -16,12 +16,13 @@ enum {
     MM_DOUBLE_PUSH, MM_CASTLE, MM_PROMOTE_QUEEN, MM_UNDERPROMOTE,
     MM_FORWARD, MM_RETREAT, MM_CENTRE, MM_DEVELOP, MM_RECAPTURE, MM_ADVANCED_PAWN,
     MM_CHECK, MM_ESCAPE, MM_INTO_ATTACK, MM_HANG_VALUE, MM_SELF_CAPTURABLE,
+    MM_UNDEFENDED, MM_KING_ZONE, MM_XRAY_KING,
     MM_FEATURES
 };
 
 /* Features of `m` for the side to move in `p`; `previous` is the other side's
  * last move (0 if unknown), for recaptures. `full` adds the attack features
- * (MM_CHECK..MM_SELF_CAPTURABLE), which cost attack tests. */
+ * (MM_CHECK..MM_XRAY_KING), which cost attack tests. */
 void move_features(const Position *p, Move m, Move previous, int full, float out[MM_FEATURES]);
 /* theta . phi for every move of `l` (the full or the cheap model's theta). */
 void move_logits(const Position *p, const MoveList *l, Move previous, int full, float *out);

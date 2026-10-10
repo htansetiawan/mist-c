@@ -25,6 +25,7 @@ typedef struct {
     int *visits;                 /* per slot: expansions through (infoset, action) */
     int cap_visits;
     int us;
+    double root_loss;            /* our root move leaving our king capturable: -kappa */
     unsigned long long rng;
 } Tree;
 
@@ -104,7 +105,7 @@ static int build_children(Tree *t, const Position *p, const uint64_t hist[2], in
         if (only && !has_move(&own, l.moves[a])) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, evaluate(p, us)); continue; }
         Position q = *p; Undo u; make_move(&q, l.moves[a], &u);
         if (king_square(&q, other) < 0) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, mover == us ? 1.0 : -1.0); continue; }
-        if (mover_left_king_capturable(&q)) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, mover == us ? -1.0 : 1.0); continue; }
+        if (mover_left_king_capturable(&q)) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, mover == us ? (only ? t->root_loss : -1.0) : 1.0); continue; }
         MoveList next; generate_moves(&q, &next);
         if (next.count == 0) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, mover == us ? 1.0 : -1.0); continue; }
         uint64_t h[2];
@@ -188,6 +189,7 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     Tree t; memset(&t, 0, sizeof(t));
     game_init(&t.g); t.us = b->us; t.rng = params->seed ^ 0x67746366ULL;
+    t.root_loss = params->king_risk > 1.0 ? -params->king_risk : -1.0;
     /* I: positions of P drawn by weight (belief_sample), each with its share */
     const int draws = params->samples > 0 ? params->samples : 1;
     int *idx = malloc(draws * sizeof(int));

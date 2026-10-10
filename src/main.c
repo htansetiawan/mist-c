@@ -87,6 +87,8 @@ int main(void) {
     const size_t cap = getenv("MIST_CAP") ? (size_t)strtoull(getenv("MIST_CAP"), NULL, 10) : 200000;
     const double max_seconds = getenv("MIST_MAX_SECONDS") ? atof(getenv("MIST_MAX_SECONDS")) : 10.0;
     const int repeat_lead = getenv("MIST_REPEAT_LEAD") ? atoi(getenv("MIST_REPEAT_LEAD")) : 2;
+    /* a root move that leaves our king capturable counts kappa losses (gtcfr.h) */
+    const double kappa = getenv("MIST_KING_RISK") ? atof(getenv("MIST_KING_RISK")) : 2.0;
     /* decision replay (tests): our first decisions play these moves (comma
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
@@ -139,7 +141,7 @@ int main(void) {
         const double budget = move_budget(remaining, increment, max_seconds);
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
-        GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions, NULL, 0};
+        GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions, NULL, 0, kappa};
         if (remaining < 20) { gp.samples = 32; gp.seconds = 0.3; }
         MoveList allowed;
         view_moves(view, us, front.castle, &allowed);

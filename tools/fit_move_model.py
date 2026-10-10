@@ -15,8 +15,8 @@ import numpy as np
 NAMES = ["capture", "captured_value", "king_capture", "knight", "bishop", "rook", "queen", "king",
          "double_push", "castle", "promote_queen", "underpromote", "forward", "retreat", "centre",
          "develop", "recapture", "advanced_pawn", "check", "escape", "into_attack", "hang_value",
-         "self_capturable"]
-ATTACK = slice(18, 23)
+         "self_capturable", "undefended", "king_zone", "xray_king"]
+ATTACK = slice(18, 26)
 
 
 def load(path):

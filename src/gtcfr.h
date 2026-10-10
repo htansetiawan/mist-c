@@ -11,6 +11,13 @@
  * move is the last iterate's top action. Approximations: worlds come from our
  * posterior only, leaves are static evaluations (no Stockfish), and the PUCT
  * value term is replaced by the current strategy.
+ *
+ * king_risk: our belief's chance that a move leaves our king capturable was
+ * calibrated against v25, TA-P and mist-c itself (22 deaths expected by it on
+ * the moves played, 18 happened) but not against Misty: 5.9 expected, 16
+ * happened. A strong opponent's hidden moves set up these traps more often
+ * than our move model (fitted on the whole arena) predicts, so the root's
+ * losses can count kappa times.
  */
 #ifndef MIST_GTCFR_H
 #define MIST_GTCFR_H
@@ -25,6 +32,8 @@ typedef struct {
     unsigned long long seed;
     const Move *avoid;           /* root moves left out (e.g. a third repetition when ahead) */
     int avoid_count;             /* ignored if it would leave no move */
+    double king_risk;            /* kappa: a root move that leaves our king capturable scores
+                                    -kappa instead of -1 (values below 1 mean 1) */
 } GtcfrParams;
 
 int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out);

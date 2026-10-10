@@ -8,9 +8,10 @@ static const float value[6] = {1, 3, 3, 5, 9, 0};
 /* Fitted by tools/fit_move_model.py on 2,029 arena games from 2026-09-30 to
  * 2026-10-10 (138,140 moves by every player but the random ones and
  * baseline.py). On 371 held-out games (25,678 moves) the full model gains
- * 0.631 nats per move over uniform (top-1 27.7%), the cheap one 0.493 (25.6%). */
-static const float theta_full[MM_FEATURES] = {1.0539f, 3.6518f, 0.0000f, -0.6054f, -0.7420f, -0.2285f, -0.4249f, -0.3893f, 0.1147f, 2.3418f, 1.6564f, -0.5505f, -0.9329f, -0.1093f, 0.9448f, 1.5853f, 1.4877f, 1.1320f, 0.6865f, 1.0260f, -0.1586f, -2.1488f, -2.5339f};
-static const float theta_cheap[MM_FEATURES] = {0.7705f, 3.6690f, 0.0000f, -0.5296f, -0.6920f, -0.2792f, -0.7406f, -0.4606f, 0.1304f, 2.3256f, 1.3647f, -0.6156f, -1.4760f, -0.1127f, 0.7298f, 1.5767f, 1.6693f, 1.0416f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f};
+ * 0.658 nats per move over uniform (top-1 27.4%; 0.631 before the undefended,
+ * king-zone and x-ray features), the cheap one 0.493 (25.6%). */
+static const float theta_full[MM_FEATURES] = {1.0883f, 4.2173f, 0.0000f, -0.5976f, -0.7174f, -0.2331f, -0.4542f, -0.3852f, 0.1103f, 2.3662f, 1.6652f, -0.5344f, -0.8673f, -0.1008f, 0.8894f, 1.5612f, 1.4574f, 1.1427f, 0.7011f, 1.0507f, -0.1183f, -1.2109f, -2.5556f, -2.4094f, 0.3295f, 0.2615f};
+static const float theta_cheap[MM_FEATURES] = {0.7705f, 3.6690f, 0.0000f, -0.5296f, -0.6920f, -0.2792f, -0.7406f, -0.4606f, 0.1304f, 2.3256f, 1.3647f, -0.6156f, -1.4760f, -0.1127f, 0.7298f, 1.5767f, 1.6693f, 1.0416f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f};
 
 void move_logits(const Position *p, const MoveList *l, Move previous, int full, float *out) {
     const float *theta = full ? theta_full : theta_cheap;
@@ -71,4 +72,19 @@ void move_features(const Position *p, Move m, Move previous, int full, float out
     }
     const int own_king = king_square(&q, mover);
     if (own_king >= 0 && is_attacked(&q, own_king, other)) out[MM_SELF_CAPTURABLE] = 1;
+    /* hanging: attacked and not defended */
+    if (out[MM_INTO_ATTACK] > 0 && !is_attacked(&q, to, mover)) out[MM_UNDEFENDED] = out[MM_HANG_VALUE];
+    if (their_king < 0) return;
+    /* pressure next to their king, and a line through one of their pieces to
+     * it (a pin or skewer: the threats a hidden piece prepares) */
+    const bb_t hits = attacks_from(&q, to);
+    out[MM_KING_ZONE] = (float)__builtin_popcountll(hits & attacks_from(&q, their_king)) / 8.0f;
+    const int moved = promo != NO_PIECE ? promo : type;
+    if (moved == BISHOP || moved == ROOK || moved == QUEEN) {
+        for (bb_t b = hits & q.by_color[other] & ~(1ULL << their_king); b; b &= b - 1) {
+            Position r = q;
+            pos_remove(&r, __builtin_ctzll(b));
+            if (attacks_from(&r, to) & (1ULL << their_king)) { out[MM_XRAY_KING] = 1; break; }
+        }
+    }
 }

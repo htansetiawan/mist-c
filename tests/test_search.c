@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
         move_to_uci(r.move, uci);
         printf("king capture test: chose %s (value %+.3f)\n", uci, r.value);
         if (strcmp(uci, "h1h8") != 0) { puts("FAIL: did not take the king"); ++failures; }
-        GtcfrParams gp = {16, 0.2, 200000, 16, 10, 1, NULL, 0};
+        GtcfrParams gp = {16, 0.2, 200000, 16, 10, 1, NULL, 0, 1.0};
         if (!gtcfr_decide(&b, &gp, &r)) { puts("FAIL: gtcfr no move"); ++failures; }
         move_to_uci(r.move, uci);
         printf("gtcfr king capture test: chose %s (value %+.3f, %d nodes, %d iterations)\n", uci, r.value, r.nodes, r.iterations);
@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
             SearchParams sp = {64, 60, (unsigned long long)decisions + 1, 0, 0}; SearchResult r;
             const double t0 = now();
             int ok;
-            if (getenv("MIST_TEST_GTCFR")) { GtcfrParams gp = {64, 0.3, 300000, 16, 10, (unsigned long long)decisions + 1, NULL, 0}; ok = gtcfr_decide(&b, &gp, &r); }
+            if (getenv("MIST_TEST_GTCFR")) { GtcfrParams gp = {64, 0.3, 300000, 16, 10, (unsigned long long)decisions + 1, NULL, 0, 1.0}; ok = gtcfr_decide(&b, &gp, &r); }
             else ok = search_decide(&b, &sp, &r);
             const double dt = now() - t0;
             total_t += dt; if (dt > max_t) max_t = dt;
