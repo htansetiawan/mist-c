@@ -14,8 +14,12 @@ build/test_cfr: src/cfr.c src/cfr.h tests/test_cfr.c
 build/test_search: $(SRC) tests/test_search.c src/search.h src/cfr.h src/belief.h src/fow.h src/eval.h
 	mkdir -p build && $(CC) $(CFLAGS) -D_POSIX_C_SOURCE=199309L $(SRC) tests/test_search.c -lm -o $@
 
-test: build/test_rules build/test_belief build/test_cfr build/test_search
+build/test_guard: $(SRC) tests/test_guard.c src/fow.h src/belief.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_guard.c -lm -o $@
+
+test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard
 	./build/test_rules tests/vectors.txt
+	./build/test_guard tests/traces.txt
 	./build/test_belief tests/traces.txt 100000
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25

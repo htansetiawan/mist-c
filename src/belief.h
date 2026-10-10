@@ -42,4 +42,20 @@ size_t belief_after_opponent(Belief *b, const char view[65]);
 size_t belief_after_own(Belief *b, Move m, const char view[65]);
 int belief_contains(const Belief *b, const Position *p);
 
+/* Rebuilds P from the current view alone, for when the capped belief has
+ * lost every position (past the cap the reservoir can drop the true board).
+ * It is our turn. The opponent's unseen pieces - `their` counts each type it
+ * still has - are placed on the squares we cannot see, pawns near their start
+ * rank; a placement is kept iff our view of it equals `view`. Up to `target`
+ * distinct positions from at most `tries` placements; histories restart from
+ * the opponent's current view. Returns the new |P| (unchanged if none fit). */
+size_t belief_resample(Belief *b, const char view[65], const int their[6], bb_t our_castle, size_t target, size_t tries);
+
+/* The moves legal on every board the view allows; any other move can be
+ * illegal on the true board, which loses the game. Generated on the visible
+ * position (unseen squares empty) and kept iff we see every square the move
+ * needs: its destination, the square a double push crosses, the squares
+ * between king and rook. En passant is left out. Returns the count. */
+int view_moves(const char view[65], int us, bb_t our_castle, MoveList *out);
+
 #endif

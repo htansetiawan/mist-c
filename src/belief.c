@@ -236,3 +236,141 @@ int belief_contains(const Belief *b, const Position *p) {
         if (position_key(&b->items[i]) == key) return 1;
     return 0;
 }
+
+/* --- when the capped belief has lost every position ------------------------ */
+
+static double unit_random(uint64_t *s) { return (double)(next_random(s) >> 11) * (1.0 / 9007199254740992.0); }
+
+/* How plausible an unseen square is for a hidden piece: pawns mostly stand
+ * near their start rank, the king near its back rank. */
+static double placement_weight(int type, int them, int sq) {
+    const int rank = sq / 8;
+    if (type == PAWN) {
+        if (rank == 0 || rank == 7) return 0;
+        const int advance = them == WHITE ? rank - 1 : 6 - rank;
+        double w = 1;
+        for (int i = 0; i < advance; ++i) w *= 0.6;
+        return w;
+    }
+    if (type == KING) return rank == (them == WHITE ? 0 : 7) ? 3 : 1;
+    return 1;
+}
+
+static int pick_square(bb_t free, int type, int them, uint64_t *rng) {
+    double total = 0, w[64];
+    for (int sq = 0; sq < 64; ++sq) { w[sq] = (free >> sq) & 1 ? placement_weight(type, them, sq) : 0; total += w[sq]; }
+    if (total <= 0) return -1;
+    double x = unit_random(rng) * total;
+    for (int sq = 0; sq < 64; ++sq) { if (w[sq] <= 0) continue; if ((x -= w[sq]) < 0) return sq; }
+    for (int sq = 63; sq >= 0; --sq) if (w[sq] > 0) return sq;
+    return -1;
+}
+
+size_t belief_resample(Belief *b, const char view[65], const int their[6], bb_t our_castle, size_t target, size_t tries) {
+    static const char *letters[2] = {"PNBRQK", "pnbrqk"};
+    const int us = b->us, them = us ^ 1;
+    char board[65];
+    int visible[6] = {0};
+    bb_t unseen = 0;
+    for (int sq = 0; sq < 64; ++sq) {
+        const char c = view[sq];
+        board[sq] = c == '?' ? '-' : c;
+        if (c == '?') unseen |= (bb_t)1 << sq;
+        for (int t = 0; t < 6; ++t) if (letters[them][t] == c) ++visible[t];
+    }
+    board[64] = '\0';
+    Position base;
+    if (pos_from_board_string(&base, board, us, our_castle, -1) != 0) return b->count;
+    /* The unseen pieces: what the opponent still has minus what we see; a
+     * piece seen beyond its count was a promoted pawn. */
+    int hidden[6];
+    for (int t = 0; t < 6; ++t) hidden[t] = their[t] - visible[t];
+    for (int t = KNIGHT; t <= QUEEN; ++t) if (hidden[t] < 0) { hidden[PAWN] += hidden[t]; hidden[t] = 0; }
+    if (hidden[PAWN] < 0) hidden[PAWN] = 0;
+    hidden[KING] = visible[KING] ? 0 : 1;
+    /* Pawn rules pin some unseen squares. In front of our pawn there is a
+     * piece (an empty square there is a legal push, hence seen); a pawn's
+     * capture square is empty (a piece there could be taken, hence seen). */
+    bb_t must_fill = 0, must_empty = 0;
+    const int dr = us == WHITE ? 8 : -8, start = us == WHITE ? 1 : 6;
+    for (bb_t p = base.by_type[PAWN] & base.by_color[us]; p; p &= p - 1) {
+        const int sq = __builtin_ctzll(p), f = sq % 8, one = sq + dr;
+        if (one < 0 || one >= 64) continue;
+        if (view[one] == '?') must_fill |= (bb_t)1 << one;
+        else if (view[one] == '-' && sq / 8 == start && view[one + dr] == '?') must_fill |= (bb_t)1 << (one + dr);
+        if (f > 0 && view[one - 1] == '?') must_empty |= (bb_t)1 << (one - 1);
+        if (f < 7 && view[one + 1] == '?') must_empty |= (bb_t)1 << (one + 1);
+    }
+    must_fill &= ~must_empty;
+    Vec next = {0};
+    set_reset(b, target);
+    char seen[65], theirs[65];
+    static const int order[6] = {KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN};
+    for (size_t attempt = 0; attempt < tries && next.count < target; ++attempt) {
+        Position p = base;
+        int left[6];
+        memcpy(left, hidden, sizeof left);
+        bb_t open = unseen & ~must_empty;
+        /* the pinned squares first, each with a piece that may stand there
+         * (an extra pawn or knight if the count has run out) */
+        for (bb_t m = must_fill; m; m &= m - 1) {
+            const int sq = __builtin_ctzll(m);
+            double total = 0, w[6];
+            for (int t = 0; t < 6; ++t) { w[t] = left[t] * placement_weight(t, them, sq); total += w[t]; }
+            int type = -1;
+            if (total > 0) {
+                double x = unit_random(&b->rng) * total;
+                for (int t = 0; t < 6 && type < 0; ++t) if (w[t] > 0 && (x -= w[t]) < 0) type = t;
+                if (type < 0) for (int t = 5; t >= 0 && type < 0; --t) if (w[t] > 0) type = t;
+                --left[type];
+            } else {
+                type = placement_weight(PAWN, them, sq) > 0 ? PAWN : KNIGHT;
+            }
+            pos_put(&p, sq, them, type);
+            open &= ~((bb_t)1 << sq);
+        }
+        for (int k = 0; k < 6; ++k) {
+            const int t = order[k];
+            for (; left[t] > 0; --left[t]) {
+                const int sq = pick_square(open, t, them, &b->rng);
+                if (sq < 0) break;   /* no room left: the piece is dropped */
+                pos_put(&p, sq, them, t);
+                open &= ~((bb_t)1 << sq);
+            }
+        }
+        observation(&p, us, seen);
+        if (memcmp(seen, view, 64) != 0) continue;
+        if (!set_insert(b, position_key(&p))) continue;
+        observation(&p, them, theirs);
+        vec_push(&next, &p, history_mix(0x7265, view_hash(theirs)));
+    }
+    if (next.count == 0) { free(next.items); free(next.hist); return b->count; }
+    b->overflowed = 1;
+    return commit(b, &next);
+}
+
+int view_moves(const char view[65], int us, bb_t our_castle, MoveList *out) {
+    char board[65];
+    for (int sq = 0; sq < 64; ++sq) board[sq] = view[sq] == '?' ? '-' : view[sq];
+    board[64] = '\0';
+    Position p;
+    out->count = 0;
+    if (pos_from_board_string(&p, board, us, our_castle, -1) != 0) return 0;
+    MoveList all;
+    generate_moves(&p, &all);
+    for (int i = 0; i < all.count; ++i) {
+        const Move m = all.moves[i];
+        const int from = MOVE_FROM(m), to = MOVE_TO(m);
+        if (view[to] == '?') continue;
+        int lo = from < to ? from : to, hi = from < to ? to : from, ok = 1;
+        if (p.piece[from] == PAWN && hi - lo == 16 && view[lo + 8] == '?') ok = 0;
+        if (p.piece[from] == KING && hi - lo == 2) {
+            /* castling: every square between king and rook */
+            const int home = us == WHITE ? 0 : 56;
+            const int a = to > from ? home + 5 : home + 1, z = to > from ? home + 6 : home + 3;
+            for (int sq = a; sq <= z; ++sq) if (view[sq] == '?') ok = 0;
+        }
+        if (ok) out->moves[out->count++] = m;
+    }
+    return out->count;
+}
