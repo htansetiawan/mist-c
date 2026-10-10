@@ -58,6 +58,23 @@ void game_finalize(Game *g) {
     g->last = calloc(g->n_slots, sizeof(double));
     g->strategy = calloc(g->n_slots, sizeof(double));
     g->strategy_sum = calloc(g->n_slots, sizeof(double));
+    g->finalized_slots = g->n_slots;
+}
+
+void game_grow(Game *g) {
+    if (g->n_slots <= g->finalized_slots) return;
+    double **arrays[4] = {&g->regret, &g->last, &g->strategy, &g->strategy_sum};
+    for (int i = 0; i < 4; ++i) {
+        *arrays[i] = realloc(*arrays[i], g->n_slots * sizeof(double));
+        memset(*arrays[i] + g->finalized_slots, 0, (g->n_slots - g->finalized_slots) * sizeof(double));
+    }
+    g->finalized_slots = g->n_slots;
+}
+
+void game_expand_leaf(Game *g, int node, int player, int infoset, const int *children, int count) {
+    game_children(g, node, children, NULL, count);
+    GameNode *n = &g->nodes[node];
+    n->type = NODE_PLAYER; n->player = player; n->infoset = infoset; n->value = 0.0;
 }
 
 /* PRM+: x proportional to [R + m]^+, m the last instantaneous regret (the

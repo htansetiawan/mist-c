@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gtcfr.h"
 #include "search.h"
 
 static int is_view(const char *s) {
@@ -66,7 +67,11 @@ int main(void) {
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
         SearchResult r; int ok = 0;
-        if (b.count > 0) ok = search_decide(&b, &sp, &r);
+        /* GT-CFR by default (MIST_SEARCH=twoply for the fixed two-ply search) */
+        const int twoply = getenv("MIST_SEARCH") && strcmp(getenv("MIST_SEARCH"), "twoply") == 0;
+        GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions};
+        if (remaining < 20) { gp.samples = 32; gp.seconds = 0.3; }
+        if (b.count > 0) ok = twoply ? search_decide(&b, &sp, &r) : gtcfr_decide(&b, &gp, &r);
         if (!ok) {
             /* fallback: decide on the position we can see */
             Position seen; view_position(view, us, &seen, b.count ? b.items[0].castle_rooks : 0);

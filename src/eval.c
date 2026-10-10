@@ -61,7 +61,6 @@ static int cheapest_attacker(const Position *p, int sq, int color) {
 }
 
 int evaluate_cp(const Position *p, int us) {
-    const int them = us ^ 1;
     int non_pawn = 0;
     for (int t = KNIGHT; t <= QUEEN; ++t) non_pawn += kValue[t] * __builtin_popcountll(p->by_type[t]);
     const int endgame = non_pawn <= 2600;
@@ -74,18 +73,19 @@ int evaluate_cp(const Position *p, int us) {
         }
         if (!endgame) score += sign * shelter(p, color);
     }
-    /* We move next: the best capture we have now (victim minus the attacker if
-     * the square is defended), counted at 80%: the opponent cannot answer it. */
+    /* The side to move: its best capture now (victim minus the attacker if the
+     * square is defended), counted at 80%: the other side cannot answer it. */
+    const int mover = p->side, other = mover ^ 1;
     int best_gain = 0;
-    for (bb_t b = p->by_color[them]; b; b &= b - 1) {
+    for (bb_t b = p->by_color[other]; b; b &= b - 1) {
         const int sq = __builtin_ctzll(b), t = p->piece[sq];
         if (t == KING) continue;
-        const int attacker = cheapest_attacker(p, sq, us);
+        const int attacker = cheapest_attacker(p, sq, mover);
         if (!attacker) continue;
-        const int gain = kValue[t] - (cheapest_attacker(p, sq, them) ? attacker : 0);
+        const int gain = kValue[t] - (cheapest_attacker(p, sq, other) ? attacker : 0);
         if (gain > best_gain) best_gain = gain;
     }
-    return score + best_gain * 4 / 5;
+    return score + (mover == us ? 1 : -1) * best_gain * 4 / 5;
 }
 
 double evaluate(const Position *p, int us) { return tanh(evaluate_cp(p, us) / 400.0); }

@@ -6,7 +6,7 @@
 
 #include "fow.h"
 
-/* Centipawns from `us`'s point of view; `us` is assumed to move next. */
+/* Centipawns from `us`'s point of view; the capture term belongs to p->side. */
 int evaluate_cp(const Position *p, int us);
 /* tanh(cp / 400): the value the solver sees. */
 double evaluate(const Position *p, int us);

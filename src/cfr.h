@@ -26,6 +26,7 @@ typedef struct {
     int *child; double *prob; int n_edges, cap_edges;   /* edge -> child node; chance probability */
     int *is_player, *is_actions, *is_offset; int n_infosets, cap_infosets;
     int n_slots;                                         /* total (infoset, action) pairs */
+    int finalized_slots;                                 /* slots the solver arrays cover */
     double *regret, *last, *strategy, *strategy_sum;     /* per slot */
     int root;
 } Game;
@@ -37,6 +38,12 @@ int  game_node(Game *g, int type, int player, int infoset, double value);
 /* Children are added in action order; for chance nodes `p` is the probability. */
 void game_children(Game *g, int node, const int *children, const double *p, int count);
 void game_finalize(Game *g);                             /* allocates solver arrays */
+/* GT-CFR grows the tree between solver iterations: after adding infosets and
+ * nodes, game_grow extends the solver arrays (new slots start at zero regret)
+ * and game_expand_leaf turns a terminal leaf into a player node in place, so
+ * every node index stays valid and the solver keeps what it learned. */
+void game_grow(Game *g);
+void game_expand_leaf(Game *g, int node, int player, int infoset, const int *children, int count);
 
 /* One iteration of alternating PCFR+: update player 0, then player 1. */
 void pcfr_iteration(Game *g, int t);

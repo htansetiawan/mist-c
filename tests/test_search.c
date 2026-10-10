@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "../src/search.h"
+#include "../src/gtcfr.h"
 
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 
@@ -37,6 +38,11 @@ int main(int argc, char **argv) {
         move_to_uci(r.move, uci);
         printf("king capture test: chose %s (value %+.3f)\n", uci, r.value);
         if (strcmp(uci, "h1h8") != 0) { puts("FAIL: did not take the king"); ++failures; }
+        GtcfrParams gp = {16, 0.2, 200000, 16, 10, 1};
+        if (!gtcfr_decide(&b, &gp, &r)) { puts("FAIL: gtcfr no move"); ++failures; }
+        move_to_uci(r.move, uci);
+        printf("gtcfr king capture test: chose %s (value %+.3f, %d nodes, %d iterations)\n", uci, r.value, r.nodes, r.iterations);
+        if (strcmp(uci, "h1h8") != 0) { puts("FAIL: gtcfr did not take the king"); ++failures; }
     }
     /* (2) recorded games */
     const char *path = argc > 1 ? argv[1] : "tests/traces.txt";
@@ -65,7 +71,9 @@ int main(int argc, char **argv) {
             Position truth; pos_from_board_string(&truth, prev_board, prev_side, prev_castle, prev_ep);
             SearchParams sp = {64, 60, (unsigned long long)decisions + 1, 0, 0}; SearchResult r;
             const double t0 = now();
-            const int ok = search_decide(&b, &sp, &r);
+            int ok;
+            if (getenv("MIST_TEST_GTCFR")) { GtcfrParams gp = {64, 0.3, 300000, 16, 10, (unsigned long long)decisions + 1}; ok = gtcfr_decide(&b, &gp, &r); }
+            else ok = search_decide(&b, &sp, &r);
             const double dt = now() - t0;
             total_t += dt; if (dt > max_t) max_t = dt;
             ++decisions; ++per_game;
