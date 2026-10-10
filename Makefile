@@ -20,6 +20,9 @@ test: build/test_rules build/test_belief build/test_cfr build/test_search
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25
 
+build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) src/main.c -lm -o $@
+
 clean:
 	rm -rf build
 .PHONY: test clean
