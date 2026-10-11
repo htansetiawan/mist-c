@@ -63,6 +63,22 @@ static double king_risk(const Belief *b, Move m) {
     return total > 0 ? lost / total : 0;
 }
 
+/* king_risk on at most `cap` boards of P, evenly strided (weights kept) */
+static double king_risk_capped(const Belief *b, Move m, size_t cap) {
+    if (b->count <= cap) return king_risk(b, m);
+    const size_t stride = (b->count + cap - 1) / cap;
+    double total = 0, lost = 0;
+    for (size_t i = 0; i < b->count; i += stride) {
+        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        Position p = b->items[i];
+        Undo u;
+        make_move(&p, m, &u);
+        total += w;
+        if (mover_left_king_capturable(&p)) lost += w;
+    }
+    return total > 0 ? lost / total : 0;
+}
+
 static double now_seconds(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -90,6 +106,8 @@ int main(void) {
     const int repeat_lead = getenv("MIST_REPEAT_LEAD") ? atoi(getenv("MIST_REPEAT_LEAD")) : 2;
     /* a root move that leaves our king capturable counts kappa losses (gtcfr.h) */
     const double kappa = getenv("MIST_KING_RISK") ? atof(getenv("MIST_KING_RISK")) : 2.0;
+    /* MIST_KING_GUARD: leave out moves this far above the safest king risk (negative: off) */
+    const double guard = getenv("MIST_KING_GUARD") ? atof(getenv("MIST_KING_GUARD")) : 0.02;
     /* decision replay (tests): our first decisions play these moves (comma
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
@@ -164,6 +182,24 @@ int main(void) {
             if (n > 0 && n < allowed.count) {
                 gp.avoid = repeats; gp.avoid_count = n;
                 fprintf(stderr, "mist: ahead by %d; %d moves would repeat our pieces a third time, left out\n", lead, n);
+            }
+        }
+        /* king guard: our opponent model gives a hidden check (a queen on
+         * a4 against e8) a few percent, so the search trades it for a pawn;
+         * at v8's three 9-12-ply losses to v7 that check had 3.5-6% and six
+         * or more moves had none. Leave out the moves more than `guard`
+         * above the safest one, measured on all of P (or 20,000 boards) */
+        Move guarded[512];
+        if (guard >= 0 && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
+            double risk[256], least = 1;
+            for (int i = 0; i < allowed.count; ++i) { risk[i] = king_risk_capped(&b, allowed.moves[i], 20000); if (risk[i] < least) least = risk[i]; }
+            int n = gp.avoid_count;
+            for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
+            int dropped = 0;
+            for (int i = 0; i < allowed.count; ++i) if (risk[i] > least + guard) { guarded[n++] = allowed.moves[i]; ++dropped; }
+            if (dropped > 0 && dropped < allowed.count) {
+                gp.avoid = guarded; gp.avoid_count = n;
+                fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f)\n", dropped, allowed.count, least);
             }
         }
         SearchResult r; int ok = 0;
