@@ -7,6 +7,7 @@
 #define MIST_KLUSS_H
 #include <stdint.h>
 #include "cfr.h"
+#include "gadget.h"
 typedef struct {
     int node;
     uint64_t ours, theirs;
@@ -35,4 +36,26 @@ void kluss_blueprint_free(KlussBlueprint *b);
  * Board/leaf payload ownership remains with the frontend integration. */
 int kluss_blueprint_capture(KlussBlueprint *b,const Game *g,const double *x,
                             const uint64_t *ours,const uint64_t *theirs);
+
+/* Prepare the carried portion of a new subgame. The adapter supplies an
+ * antichain of histories at the new decision time; no board matching occurs
+ * here. Fresh sampled worlds must still be added by the engine adapter.
+ * Grouping is by the opponent's full history key, never by board/view alone.
+ * Gifts are computed on the unpruned blueprint before building the gadget. */
+typedef struct {
+    Gadget gadget;
+    GadgetRoot *roots;
+    GadgetGroup *groups;
+    uint64_t *opponent_keys;
+    int *frontier_index,*distance;
+    int root_count,group_count,current_count;
+} KlussPrepared;
+void kluss_prepared_init(KlussPrepared *p);
+void kluss_prepared_free(KlussPrepared *p);
+/* Initialize out before first use. Atomically replaces it on success;
+ * preserves it on invalid metadata, undefined conditional support, malformed
+ * histories or allocation failure. Seeds fresh minimizers with blueprint
+ * behavior. O(nodes+edges+slots+frontier*log(frontier)) work, linear memory. */
+int kluss_prepare(const KlussBlueprint *blueprint,const KlussFrontier *frontier,
+                  int count,uint64_t current,KlussPrepared *out);
 #endif

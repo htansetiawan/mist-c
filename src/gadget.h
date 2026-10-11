@@ -33,17 +33,42 @@ typedef struct {
  * Copies only the selected descendants; original infosets remain shared.
  * Nodes are centered by effective alt. Resolve exits with 0, so its value is
  * the truncated margin objective; Maxmargin directly selects a group.
- * This does NOT automatically implement the paper's smooth mode controller.
+ * Call gadget_iteration for the smooth controller, or pcfr_iteration with
+ * an explicitly selected fixed gadget for stationary-game tests.
  */
 int gadget_build(const Game *source, const GadgetRoot *roots, int n_roots,
                  const GadgetGroup *groups, int n_groups, Gadget *out);
 void gadget_free(Gadget *g);
 void gadget_mode(Gadget *g, int mode);
+/* Figure 10 controller. Both root minimizers learn on every iteration; the
+ * continuation has one shared set of regrets. Mode selection above is only
+ * for fixed-gadget tests and has no effect on this automatic controller. */
+typedef struct {
+    double *strategy, *instant, *root_weight, *root_value;
+    unsigned char *visited;
+    int slots, infosets, groups; /* workspace capacities, grows with the tree */
+    double max_enter, active_mass;
+} GadgetSolver;
+void gadget_solver_init(GadgetSolver *s);
+void gadget_solver_free(GadgetSolver *s);
+/* Effective opponent root reach, NOT a normalized chance distribution:
+ * w[J] = pmax*alpha[J]*enter[J] + (1-pmax)*maxmargin[J].
+ * Returns pmax, or NAN for invalid inputs; weights has groups entries. */
+double gadget_root_weights(const Gadget *g,const double *strategy,double *weights);
+/* One alternating PCFR+ iteration, then both auxiliary root updates. Returns
+ * 0 on bad/unfinalized state or allocation failure. Use pcfr_current for the
+ * resulting continuation behavior; solver.root_weight/max_enter/active_mass
+ * give the new controller state. Call game_grow after expanding the tree.
+ * This computes a shared adaptive search policy, not an equilibrium solver
+ * for a single stationary game; benchmark fixed gadgets separately. */
+int gadget_iteration(Gadget *g,int iteration,GadgetSolver *workspace);
 /* Expanded leaves must retain their group's offset; never mix uncentered
  * eval scores with centered gadget terminals. Returns raw - effective_alt. */
 double gadget_leaf_value(const Gadget *g, int group, double raw);
 /* Starts fresh regret minimizers with the blueprint as first behaviour.
- * Does not reuse old accumulated regret, prediction or average statistics. */
+ * Cumulative regret and averages are zero. Initial prediction is set to x
+ * until first visited, then overwritten with the first instantaneous regret.
+ * Does not reuse the old solver's regret, prediction or average statistics. */
 int gadget_seed_blueprint(Gadget *g, const Game *source, const double *strategy);
 /* C.2 incremental gift over an opponent action on the path to the cut. */
 double gadget_gift_step(double gift, double before_cf, double after_cf);

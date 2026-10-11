@@ -135,6 +135,107 @@ double gadget_leaf_value(const Gadget *g,int group,double raw){return group>=0&&
 double gadget_gift_step(double gift,double before,double after){return gift+fmax(0,after-before);}
 double gadget_new_alternate(double leaf,double previous){return fmin(leaf,previous);}
 
+void gadget_solver_init(GadgetSolver *s){memset(s,0,sizeof(*s));}
+void gadget_solver_free(GadgetSolver *s) {
+    free(s->strategy);free(s->instant);free(s->root_weight);free(s->root_value);free(s->visited);
+    gadget_solver_init(s);
+}
+static int solver_reserve(GadgetSolver *s,const Gadget *g) {
+    if(s->slots>=g->game.n_slots && s->infosets>=g->game.n_infosets && s->groups>=g->groups)return 1;
+    GadgetSolver fresh;gadget_solver_init(&fresh);
+    fresh.slots=g->game.n_slots;fresh.infosets=g->game.n_infosets;fresh.groups=g->groups;
+    fresh.strategy=malloc((size_t)fresh.slots*sizeof(double));fresh.instant=malloc((size_t)fresh.slots*sizeof(double));
+    fresh.root_weight=malloc((size_t)fresh.groups*sizeof(double));fresh.root_value=malloc((size_t)fresh.groups*sizeof(double));
+    fresh.visited=malloc((size_t)fresh.infosets);
+    if(!fresh.strategy||!fresh.instant||!fresh.root_weight||!fresh.root_value||!fresh.visited){gadget_solver_free(&fresh);return 0;}
+    gadget_solver_free(s);*s=fresh;return 1;
+}
+double gadget_root_weights(const Gadget *g,const double *x,double *w) {
+    if(!g||!x||!w||g->groups<=0)return NAN;
+    const Game *tree=&g->game;int q=tree->is_offset[g->selector];double pmax=0;
+    if(!distribution(x+q,g->groups))return NAN;
+    for(int j=0;j<g->groups;++j) {
+        int e=tree->is_offset[g->entry_infoset[j]];
+        if(!distribution(x+e,2))return NAN;
+        if(x[e+1]>pmax)pmax=x[e+1];
+    }
+    for(int j=0;j<g->groups;++j)w[j]=pmax*g->alpha[j]*x[tree->is_offset[g->entry_infoset[j]]+1]+(1-pmax)*x[q+j];
+    return pmax;
+}
+
+/* Counterfactual traversal of the CONTINUATION only. Root reach belongs to
+ * the opponent for P0; P1 must examine each J counterfactually even when its
+ * current root policy avoids that J. Unvisited infosets retain their PRM+
+ * prediction; replacing it with zero would alter a pruned policy. */
+static double continuation(const Game *g,int v,int player,double reach,
+                           GadgetSolver *s,int *ok) {
+    const GameNode *n=&g->nodes[v];
+    if(n->type==NODE_TERMINAL)return player==0?n->value:-n->value;
+    if(n->type==NODE_CHANCE) {
+        double value=0;
+        for(int a=0;a<n->count;++a) {
+            double p=g->prob[n->first+a];
+            if(p>0)value+=p*continuation(g,g->child[n->first+a],player,reach*p,s,ok);
+        }
+        return value;
+    }
+    int I=n->infoset,o=g->is_offset[I];double value=0;
+    if(n->player!=player) {
+        for(int a=0;a<n->count;++a) {
+            double p=s->strategy[o+a];
+            if(p>0)value+=p*continuation(g,g->child[n->first+a],player,reach*p,s,ok);
+        }
+        return value;
+    }
+    double buf[64],*values=n->count<=64?buf:malloc((size_t)n->count*sizeof(double));
+    if(!values){*ok=0;return 0;}
+    s->visited[I]=1;
+    for(int a=0;a<n->count;++a){values[a]=continuation(g,g->child[n->first+a],player,reach,s,ok);value+=s->strategy[o+a]*values[a];}
+    for(int a=0;a<n->count;++a)s->instant[o+a]+=reach*(values[a]-value);
+    if(values!=buf)free(values);
+    return value;
+}
+static void update_infoset(Game *g,int I,int t,const GadgetSolver *s) {
+    int o=g->is_offset[I];
+    for(int a=0;a<g->is_actions[I];++a) {
+        g->regret[o+a]=fmax(0,g->regret[o+a]+s->instant[o+a]);
+        g->last[o+a]=s->instant[o+a];
+        g->strategy_sum[o+a]+=(double)t*s->strategy[o+a];
+    }
+}
+int gadget_iteration(Gadget *g,int t,GadgetSolver *s) {
+    if(!g||!s||t<=0||g->groups<=0||g->game.finalized_slots<g->game.n_slots)return 0;
+    if(!solver_reserve(s,g))return 0;
+    Game *tree=&g->game;int ok=1;
+    for(int player=0;player<2;++player) {
+        pcfr_current(tree,s->strategy);
+        if(player==0 && !isfinite(gadget_root_weights(g,s->strategy,s->root_weight)))return 0;
+        memset(s->instant,0,(size_t)tree->n_slots*sizeof(double));memset(s->visited,0,(size_t)tree->n_infosets);
+        for(int j=0;j<g->groups;++j) {
+            double reach=player==0?s->root_weight[j]:1;
+            if(reach>0)s->root_value[j]=continuation(tree,g->group_chance[j],player,reach,s,&ok);
+        }
+        if(!ok)return 0;
+        for(int I=0;I<tree->n_infosets;++I)if(tree->is_player[I]==player && s->visited[I])update_infoset(tree,I,t,s);
+        if(player==1) {
+            /* In centered P0 utilities, the opponent's enter payoff is
+             * -margin. Exit is zero. Each root RM sees this same vector. */
+            int q=tree->is_offset[g->selector];double expected=0;
+            for(int j=0;j<g->groups;++j)expected+=s->strategy[q+j]*s->root_value[j];
+            for(int j=0;j<g->groups;++j)s->instant[q+j]=s->root_value[j]-expected;
+            update_infoset(tree,g->selector,t,s);
+            for(int j=0;j<g->groups;++j) {
+                int I=g->entry_infoset[j],o=tree->is_offset[I];double enter=s->strategy[o+1],v=s->root_value[j];
+                s->instant[o]=-enter*v;s->instant[o+1]=(1-enter)*v;
+                update_infoset(tree,I,t,s);
+            }
+        }
+    }
+    pcfr_current(tree,s->strategy);s->max_enter=gadget_root_weights(g,s->strategy,s->root_weight);s->active_mass=0;
+    for(int j=0;j<g->groups;++j)s->active_mass+=s->root_weight[j];
+    return isfinite(s->max_enter);
+}
+
 int gadget_seed_blueprint(Gadget *g,const Game *s,const double *x) {
     if(!s || !x || s->n_infosets!=g->source_infosets)return 0;
     for(int i=0;i<s->n_infosets;++i)if(g->infoset_map[i]>=0)
@@ -145,7 +246,10 @@ int gadget_seed_blueprint(Gadget *g,const Game *s,const double *x) {
     memset(g->game.strategy,0,(size_t)g->game.n_slots*sizeof(double));
     for(int i=0;i<s->n_infosets;++i)if(g->infoset_map[i]>=0) {
         int dest=g->game.is_offset[g->infoset_map[i]],src=s->is_offset[i];
-        memcpy(g->game.regret+dest,x+src,(size_t)s->is_actions[i]*sizeof(double));
+        /* Seed only the FIRST prediction. Cumulative regret must start at
+         * zero; putting x in regret would leave a unit-strength bias after
+         * the first update, especially harmful at tiny CF reaches. */
+        memcpy(g->game.last+dest,x+src,(size_t)s->is_actions[i]*sizeof(double));
     }
     return 1;
 }

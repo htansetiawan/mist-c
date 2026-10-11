@@ -45,7 +45,12 @@ int main(void) {
     x[0]=.8;x[1]=.2;assert(gadget_seed_blueprint(&g,&s,x));
     double *all=malloc((size_t)g.game.n_slots*sizeof(double));pcfr_current(&g.game,all);
     assert(fabs(all[g.game.is_offset[g.infoset_map[0]]]-.8)<1e-12);
-    for(int i=0;i<g.game.n_slots;++i){assert(g.game.last[i]==0);assert(g.game.strategy_sum[i]==0);}
+    for(int i=0;i<g.game.n_slots;++i){assert(g.game.regret[i]==0);assert(g.game.strategy_sum[i]==0);}
+    int seed=g.game.is_offset[g.infoset_map[0]];
+    assert(fabs(g.game.last[seed]-.8)<1e-12);assert(fabs(g.game.last[seed+1]-.2)<1e-12);
+    GadgetSolver workspace;gadget_solver_init(&workspace);assert(gadget_iteration(&g,1,&workspace));
+    for(int a=0;a<2;++a)assert(fabs(g.game.regret[seed+a]-fmax(0,g.game.last[seed+a]))<1e-12);
+    gadget_solver_free(&workspace);
     free(all);gadget_free(&g);
     /* Positive gift LOWERS the effective P0 alternate, per Figure 9 line 8. */
     groups[0].gift=.4;assert(gadget_build(&s,roots,2,groups,2,&g));assert(fabs(g.offset[0]-1.6)<1e-12);gadget_free(&g);

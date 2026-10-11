@@ -52,9 +52,15 @@ build/test_kluss: $(M4_SRC) $(M4_HDR) tests/test_kluss.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_kluss.c -lm -o $@
 build/test_gadget_kuhn: $(M4_SRC) $(M4_HDR) tests/test_gadget_kuhn.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_gadget_kuhn.c -lm -o $@
-test_m4: build/test_gadget build/test_kluss build/test_gadget_kuhn
+build/test_gadget_controller: $(M4_SRC) $(M4_HDR) tests/test_gadget_controller.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_gadget_controller.c -lm -o $@
+build/test_kluss_prepare: $(M4_SRC) $(M4_HDR) tests/test_kluss_prepare.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_kluss_prepare.c -lm -o $@
+test_m4: build/test_gadget build/test_kluss build/test_gadget_kuhn build/test_gadget_controller build/test_kluss_prepare
 	./build/test_gadget
 	./build/test_kluss
 	./build/test_gadget_kuhn
+	./build/test_gadget_controller
+	./build/test_kluss_prepare
 test: test_m4
 .PHONY: test_m4

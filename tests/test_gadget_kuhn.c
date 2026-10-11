@@ -33,17 +33,23 @@ int main(void) {
     /* Contradictory root labels cannot give the opponent perfect recall. */
     Gadget bad;int saved_group=r[0].group;r[0].group=(saved_group+1)%3;
     assert(!gadget_build(&s,r,6,groups,3,&bad));gadget_free(&bad);r[0].group=saved_group;
-    for(int mode=0;mode<2;++mode) {
-        Gadget g;assert(gadget_build(&s,r,6,groups,3,&g));assert(gadget_seed_blueprint(&g,&s,x));gadget_mode(&g,mode);
-        for(int t=1;t<=4000;++t)pcfr_iteration(&g.game,t);
+    for(int mode=0;mode<3;++mode) {
+        Gadget g;assert(gadget_build(&s,r,6,groups,3,&g));assert(gadget_seed_blueprint(&g,&s,x));
+        GadgetSolver solver;gadget_solver_init(&solver);
+        gadget_mode(&g,mode==2?GADGET_RESOLVE:mode);
+        for(int t=1;t<=4000;++t) {
+            if(mode==2)assert(gadget_iteration(&g,t,&solver));
+            else pcfr_iteration(&g.game,t);
+        }
         double *gx=malloc((size_t)g.game.n_slots*sizeof(double)),*combined=malloc((size_t)s.n_slots*sizeof(double));
         pcfr_current(&g.game,gx);memcpy(combined,x,(size_t)s.n_slots*sizeof(double));
         for(int i=0;i<s.n_infosets;++i)if(s.is_player[i]==0&&g.infoset_map[i]>=0)
             memcpy(combined+s.is_offset[i],gx+g.game.is_offset[g.infoset_map[i]],(size_t)s.is_actions[i]*sizeof(double));
         double after=best_response_value(&s,combined,1),gap=exploitability(&g.game,gx);
-        printf("Kuhn mode=%d: opponent BR %.8f -> %.8f, gadget gap %.8g\n",mode,before,after,gap);
-        assert(after<=before+.005);assert(gap<.01);
-        free(gx);free(combined);gadget_free(&g);
+        printf("Kuhn mode=%d%s: opponent BR %.8f -> %.8f, %s gap %.8g\n",mode,mode==2?" (adaptive)":"",before,after,mode==2?"fixed-Resolve diagnostic":"gadget",gap);
+        assert(after<=before+.005);assert(exploitability(&s,combined)<.005);
+        if(mode<2)assert(gap<.01); /* Adaptive profile is not a fixed-gadget NE. */
+        free(gx);free(combined);gadget_solver_free(&solver);gadget_free(&g);
     }
     /* A zero-probability opponent action leaves its counterfactual reach
      * intact, even though its opponent-own reach is zero. */
