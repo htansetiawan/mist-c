@@ -1,10 +1,6 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
 
-# Offline structural labels only; never linked into the submitted engine.
-build/m4_dilemma_labels: src/board.c src/fow.h tools/m4_dilemma_labels.c
-	mkdir -p build && $(CC) $(CFLAGS) src/board.c tools/m4_dilemma_labels.c -o $@
-
 SRC = src/board.c src/belief.c src/movemodel.c src/cfr.c src/eval.c src/search.c src/gtcfr.c src/front.c src/sfeval.c
 
 build/test_rules: $(SRC) tests/test_rules.c src/fow.h
@@ -152,3 +148,7 @@ build/test_m4_resample: src/m4resample.c src/m4resample.h tests/test_m4_resample
 test_m4_resample: build/test_m4_resample
 	./build/test_m4_resample
 .PHONY: test_m4_resample
+
+# Offline structural labels only; never linked into the submitted engine.
+build/m4_dilemma_labels: src/board.c src/fow.h tools/m4_dilemma_labels.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c tools/m4_dilemma_labels.c -o $@

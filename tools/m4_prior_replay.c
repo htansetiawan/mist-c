@@ -77,6 +77,19 @@ int main(int argc,char **argv) {
         if(own) {
             MoveList allowed;view_moves(view,us,front.castle,&allowed);int legal=0;
             for(int i=0;i<allowed.count;++i)if(allowed.moves[i]==move)legal=1;
+            /* A single observation can omit legal en passant when the captured
+             * pawn is also visible by another attack. The history may still
+             * prove it. Match the runtime's legal-everywhere guard, without
+             * consulting truth or accepting a move from only one particle. */
+            if(!legal&&b.count) {
+                legal=1;
+                for(size_t j=0;j<b.count&&legal;++j) {
+                    MoveList candidates;generate_moves(&b.items[j],&candidates);int found=0;
+                    for(int k=0;k<candidates.count;++k)found|=candidates.moves[k]==move;
+                    if(!found)legal=0;
+                }
+                if(legal)fprintf(stderr,"historical move proven in all %zu belief worlds: %s %s ply%d\n",b.count,id,uci,ply);
+            }
             if(!legal){fprintf(stderr,"own move not observation-legal %s ply%d\n",id,ply);return 3;}
             audit(&b,&truth,view,id,ply,move,rebuilds,collapsed,update_seconds);
             front_play(&front,view,move);
