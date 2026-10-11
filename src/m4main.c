@@ -155,6 +155,13 @@ int main(void) {
      * Loading Stockfish's embedded network can exceed 1s on a busy host.
      * This separate bounded allowance does not extend search requests. */
     if(use_m4&&getenv("MIST_STOCKFISH")&&*getenv("MIST_STOCKFISH"))m4sf=m4sf_open(getenv("MIST_STOCKFISH"),5.0);
+    /* Native evaluator logging changes wall-clock timing. Keep it confined to
+     * forced offline replays; never treat these as playing-clock measurements. */
+    const char *sf_log=getenv("MIST_M4_SF_LOG");
+    if(forced&&sf_log&&*sf_log&&!m4sf_debug_log(m4sf,sf_log,1.0)) {
+        fprintf(stderr,"mist-m4: evaluator log setup failed\n");
+        m4sf_close(m4sf);m4_free(m4);return 2;
+    }
     int child_alternates=m4sf!=NULL||(getenv("MIST_M4_ALT_CHILDREN")&&atoi(getenv("MIST_M4_ALT_CHILDREN"))!=0);
     m4_set_evaluation(m4,m4sf,child_alternates);
     double leaf_scale=1;const char *scale_env=getenv("MIST_M4_LEAF_SCALE");

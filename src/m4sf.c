@@ -113,6 +113,14 @@ failed:
             phase,m4sf_now()-started,m4sf_now()>=deadline);
     m4sf_close(s);return NULL;
 }
+int m4sf_debug_log(M4SF *s,const char *path,double seconds) {
+    if(!m4sf_ready(s)||!path||!*path||strlen(path)>1024||strchr(path,'\n')||
+       strchr(path,'\r')||!isfinite(seconds)||seconds<=0)return 0;
+    char command[1100];double deadline=m4sf_now()+seconds;
+    snprintf(command,sizeof(command),"setoption name Debug Log File value %s\nisready\n",path);
+    if(send_all(s,command,deadline)&&wait_word(s,"readyok",deadline))return 1;
+    disable(s);return 0;
+}
 static int supported(const Position *p){
     if(__builtin_popcountll(p->by_type[KING]&p->by_color[WHITE])!=1||
        __builtin_popcountll(p->by_type[KING]&p->by_color[BLACK])!=1||

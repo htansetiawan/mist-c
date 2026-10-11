@@ -49,3 +49,19 @@ terminal gap improves playing strength. The next isolated experiment reserves
 space between uncertain heuristic scores and proven terminal outcomes.
 
 Repository evidence: `iamavirus/astra-submissions/analysis/m4-tree-audit-20261011/`.
+
+## Native evaluator request logs
+
+For forced offline replays only, `MIST_M4_SF_LOG=/absolute/path` asks the existing
+Stockfish process to enable its native `Debug Log File` option. The transport
+uses a bounded readiness handshake and rejects CR/LF in the option value.
+Ordinary decisions without `MIST_FORCE_MOVES` ignore the variable. Verify the
+file and reconcile complete `go`/`bestmove` pairs with transport call counts;
+`readyok` alone is not proof that an engine supports the logging option.
+
+Logging changes wall-clock timing. This is for evaluator-reuse diagnostics,
+not a benchmark of uninstrumented latency. A six-decision probe found only
+5.78% repeated exact FENs, with changed score maps on 1,728 of 1,734 repeats.
+Four controlled cases reproduce identical maps after `ucinewgame`, while
+intervening requests change scores. Neither a cache nor per-leaf resets are
+enabled. See `iamavirus/astra-submissions/analysis/m4-evaluator-reuse-20261011/`.
