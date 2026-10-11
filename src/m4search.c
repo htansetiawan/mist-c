@@ -48,6 +48,7 @@ struct M4Search {
     double leaf_scale;
     int root_dominance;
     int fast_roots;
+    double settle_fraction;
     double *trace_alternates;
     int trace_groups;
 };
@@ -82,6 +83,11 @@ int m4_set_root_dominance(M4Search *s,int enabled) {
 int m4_set_fast_roots(M4Search *s,int enabled) {
     if(!s||(enabled!=0&&enabled!=1)||(s->blueprint.valid&&enabled!=s->fast_roots))return 0;
     s->fast_roots=enabled;return 1;
+}
+int m4_set_settle_fraction(M4Search *s,double fraction) {
+    if(!s||!isfinite(fraction)||fraction<0||fraction>.5
+       ||(s->blueprint.valid&&fraction!=s->settle_fraction))return 0;
+    s->settle_fraction=fraction;return 1;
 }
 int m4_observe(M4Search *s,const char view[65]) {
     if(!s||!valid_view(view))return 0;
@@ -441,10 +447,18 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     if(root_I<0)goto done;
     stats->groups=ng;stats->setup_seconds=now()-start;
     int iteration=0,explorer=0,last_mode=-1,stability_started=0;
+    const double solve_deadline=t.deadline;
+    const double growth_deadline=solve_deadline-p->seconds*s->settle_fraction;
+    double settle_started=0;
     unsigned char stable[256];memset(stable,1,sizeof(stable));
-    while(now()<t.deadline&&(p->max_iterations<=0||iteration<p->max_iterations)) {
-        for(int k=0;k<p->iterations_per_round&&now()<t.deadline&&(p->max_iterations<=0||iteration<p->max_iterations);++k) {
+    while(now()<solve_deadline&&(p->max_iterations<=0||iteration<p->max_iterations)) {
+        if(s->settle_fraction>0&&!settle_started&&now()>=growth_deadline) {
+            settle_started=now();stats->settle_nodes=gadget.game.n_nodes;
+            stats->settle_expansions=stats->expansions;
+        }
+        for(int k=0;k<p->iterations_per_round&&now()<solve_deadline&&(p->max_iterations<=0||iteration<p->max_iterations);++k) {
             if(!gadget_iteration(&gadget,++iteration,&solver))goto done;
+            if(settle_started)++stats->settle_iterations;
             int mode=solver.max_enter>1e-9;if(last_mode>=0&&mode!=last_mode)++stats->mode_changes;last_mode=mode;
             if(now()-start>=p->seconds*.5) {
                 stability_started=1;int ro=gadget.game.is_offset[root_I];
@@ -452,6 +466,10 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
             }
         }
         if(!iteration)break;
+        /* Once growth stops, only the solver runs. The original decision and
+         * snapshot deadlines stay unchanged; no extra clock is requested. */
+        if(now()>=growth_deadline)continue;
+        t.deadline=growth_deadline;
         for(int k=0;k<p->expansions_per_round&&now()<t.deadline;++k) {
             int expanded=0;
             if(t.frontier&&(k&1)==0) {
@@ -466,6 +484,7 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
             if(t.failed)goto done;
         }
     }
+    if(settle_started)stats->settle_seconds=now()-settle_started;
     x=malloc((size_t)gadget.game.n_slots*sizeof(double));if(!x)goto done;pcfr_current(&gadget.game,x);
     int o=gadget.game.is_offset[root_I],best=0;
     if(gadget.game.is_actions[root_I]!=legal.count)goto done;

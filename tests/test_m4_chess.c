@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 static M4SF *external;
 static double leaf_scale=1;
 
@@ -104,8 +105,22 @@ static void tactical_schedule(void) {
     printf("M4 tactical scheduler: scheduled=%d expanded=%d dropped=%d snapshot=%d\n",st.closure_scheduled,st.closure_expanded,st.closure_dropped,st.snapshot);
     m4_free(s);
 }
+static void fixed_tree_settling(void) {
+    Position p;pos_start(&p);Belief b={.items=&p,.count=1,.us=WHITE};
+    M4Search *s=m4_create(WHITE);char view[65];observation(&p,WHITE,view);
+    assert(m4_observe(s,view));
+    assert(!m4_set_settle_fraction(s,NAN));assert(!m4_set_settle_fraction(s,-.1));
+    assert(!m4_set_settle_fraction(s,.6));assert(m4_set_settle_fraction(s,.2));
+    M4Params params={1,10000,0,16,2,.3,23,0};M4Stats st;SearchResult r;
+    assert(m4_decide(s,&b,&params,&r,&st));
+    assert(st.snapshot&&!st.over_budget&&st.settle_iterations>0&&st.settle_seconds>0);
+    assert(st.settle_nodes==r.nodes&&st.settle_expansions==st.expansions);
+    assert(m4_set_settle_fraction(s,.2));assert(!m4_set_settle_fraction(s,0));
+    printf("M4 fixed-tree settling: %d iterations %.4fs; nodes unchanged %d; expansions unchanged %d\n",st.settle_iterations,st.settle_seconds,st.settle_nodes,st.settle_expansions);
+    m4_free(s);
+}
 int main(void){fow_init();zobrist_init();
     if(getenv("MIST_M4_LEAF_SCALE"))leaf_scale=atof(getenv("MIST_M4_LEAF_SCALE"));
     if(getenv("MIST_STOCKFISH")){external=m4sf_open(getenv("MIST_STOCKFISH"),1.0);assert(external);}
-    history_conformance();chess_carry(WHITE);chess_carry(BLACK);fifty_move_draw();tactical_schedule();m4sf_close(external);
+    history_conformance();chess_carry(WHITE);chess_carry(BLACK);fifty_move_draw();tactical_schedule();fixed_tree_settling();m4sf_close(external);
     puts("test_m4_chess: passed");return 0;}
