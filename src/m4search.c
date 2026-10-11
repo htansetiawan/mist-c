@@ -24,7 +24,7 @@ typedef struct {
     InfoEntry *info;int info_size,info_count;
     int *visits,visit_capacity;
     int us,failed,conservative_leaves,max_nodes;
-    double deadline;
+    double deadline,leaf_scale;
     uint64_t rng;
     M4SF *sf;
     int sf_scored_moves;
@@ -44,6 +44,7 @@ struct M4Search {
     int child_alternates;
     int tactical_closure;
     int snapshot_ply;
+    double leaf_scale;
     double *trace_alternates;
     int trace_groups;
 };
@@ -62,11 +63,15 @@ static int valid_view(const char *v) {
 M4Search *m4_create(int us) {
     if(us!=WHITE&&us!=BLACK)return NULL;
     M4Search *s=calloc(1,sizeof(*s));if(!s)return NULL;
-    kluss_blueprint_init(&s->blueprint);s->us=us;s->next_scope=1;s->snapshot_ply=-1;return s;
+    kluss_blueprint_init(&s->blueprint);s->us=us;s->next_scope=1;s->snapshot_ply=-1;s->leaf_scale=1;return s;
 }
 void m4_free(M4Search *s){if(s){kluss_blueprint_free(&s->blueprint);free(s->board);free(s->trace_alternates);free(s);}}
 void m4_set_evaluation(M4Search *s,M4SF *sf,int child_alternates){if(s){s->sf=sf;s->child_alternates=child_alternates!=0;}}
 void m4_set_tactical_closure(M4Search *s,int enabled){if(s)s->tactical_closure=enabled!=0;}
+int m4_set_leaf_scale(M4Search *s,double scale) {
+    if(!s||!isfinite(scale)||scale<=0||scale>1||(s->blueprint.valid&&scale!=s->leaf_scale))return 0;
+    s->leaf_scale=scale;return 1;
+}
 int m4_observe(M4Search *s,const char view[65]) {
     if(!s||!valid_view(view))return 0;
     if(!s->seen){s->own=history_mix(0,view_hash(view));s->seen=1;}
@@ -173,7 +178,7 @@ static int expand(ChessTree *t,int h) {
         else if(child.pos.halfmove>=100){child.live=0;value=0;}
         else {
             MoveList legal;generate_moves(&child.pos,&legal);child.live=legal.count>0;
-            value=child.live?(found[a]?tanh(cp[a]/400.0)*(mover==t->us?1:-1):evaluate(&child.pos,t->us)):(mover==t->us?1:-1);
+            value=child.live?t->leaf_scale*(found[a]?tanh(cp[a]/400.0)*(mover==t->us?1:-1):evaluate(&child.pos,t->us)):(mover==t->us?1:-1);
         }
         double score=mover==t->us?value:-value;if(score>best_value){best_value=score;best=a;}
         if(t->gadget)value=gadget_leaf_value(t->gadget,child.group,value);
@@ -301,7 +306,7 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
        ||p->max_nodes<256||p->seconds<=0||p->iterations_per_round<=0||p->expansions_per_round<0)return 0;
     stats->ply=s->ply;Game raw;game_init(&raw);Gadget gadget;memset(&gadget,0,sizeof(gadget));game_init(&gadget.game);
     KlussPrepared prepared;kluss_prepared_init(&prepared);GadgetSolver solver;gadget_solver_init(&solver);
-    ChessTree t={0};t.game=&raw;t.us=s->us;t.max_nodes=p->max_nodes;t.rng=p->seed;t.deadline=start+p->seconds*.75;t.sf=s->sf;
+    ChessTree t={0};t.game=&raw;t.us=s->us;t.max_nodes=p->max_nodes;t.rng=p->seed;t.deadline=start+p->seconds*.75;t.sf=s->sf;t.leaf_scale=s->leaf_scale;
     M4SFStats sf_before;m4sf_stats(s->sf,&sf_before);
     GadgetRoot *roots=NULL;GadgetGroup *groups=NULL;Sample *sample=NULL;uint64_t *excluded=NULL;
     double *x=NULL;int nr=0,ng=0,ok=0,root_I=-1;MoveList legal;legal.count=0;
@@ -356,7 +361,7 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
         const Position *pos=&b->items[sample[k].index];char view[65];observation(pos,s->us,view);
         if(pos->side!=s->us||memcmp(view,s->view,64))continue;
         if(raw.n_nodes+1+3*(ng+1)+2-old_aux>p->max_nodes||now()>=t.deadline)break;
-        double value=evaluate(pos,s->us);int h=game_node(&raw,NODE_TERMINAL,0,-1,value);
+        double value=s->leaf_scale*evaluate(pos,s->us);int h=game_node(&raw,NODE_TERMINAL,0,-1,value);
         if(!reserve_boards(&t,raw.n_nodes))goto done;
         BoardNode v={0};v.pos=*pos;v.own=s->own;v.ply=s->ply;v.live=v.valid=1;v.group=ng;
         observation(pos,s->us^1,view);v.opponent=b->hist?b->hist[sample[k].index]:history_mix(0,view_hash(view));

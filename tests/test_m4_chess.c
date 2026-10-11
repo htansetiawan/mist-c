@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 static M4SF *external;
+static double leaf_scale=1;
 
 static Move from_uci(const Position *p,const char *uci) {
     MoveList l;generate_moves(p,&l);
@@ -37,6 +38,7 @@ static int safe_opponent(Position *p) {
 static void chess_carry(int us) {
     Position p;pos_start(&p);Belief b;belief_init_start(&b,us,20000);
     M4Search *s=m4_create(us);assert(s);char view[65];observation(&p,us,view);assert(m4_observe(s,view));
+    assert(m4_set_leaf_scale(s,leaf_scale));
     m4_set_evaluation(s,external,external!=NULL);
     m4_set_tactical_closure(s,getenv("MIST_M4_CLOSURE")!=NULL);
     M4Params params={12,30000,40,16,2,2.0,19,0};
@@ -64,6 +66,7 @@ static void fifty_move_draw(void) {
     Position p;pos_clear(&p);p.side=WHITE;p.halfmove=99;
     pos_put(&p,6,WHITE,KING);pos_put(&p,60,BLACK,KING);pos_put(&p,57,BLACK,ROOK);
     Belief b={.items=&p,.count=1,.us=WHITE};M4Search *s=m4_create(WHITE);
+    assert(m4_set_leaf_scale(s,leaf_scale));
     m4_set_evaluation(s,external,external!=NULL);
     m4_set_tactical_closure(s,getenv("MIST_M4_CLOSURE")!=NULL);
     char view[65];observation(&p,WHITE,view);assert(m4_observe(s,view));
@@ -77,6 +80,7 @@ static void tactical_schedule(void) {
     for(int i=0;i<4;++i){Move m=from_uci(&p,line[i]);Undo u;make_move(&p,m,&u);}
     Belief b={.items=&p,.count=1,.us=WHITE};M4Search *s=m4_create(WHITE);char view[65];
     observation(&p,WHITE,view);assert(m4_observe(s,view));m4_set_tactical_closure(s,1);
+    assert(m4_set_leaf_scale(s,leaf_scale));
     m4_set_evaluation(s,external,external!=NULL);
     M4Params params={1,40000,200,32,10,2.0,21,0};M4Stats st;SearchResult r;
     assert(m4_decide(s,&b,&params,&r,&st));assert(st.snapshot&&!st.over_budget);
@@ -90,6 +94,7 @@ static void tactical_schedule(void) {
     m4_free(s);
 }
 int main(void){fow_init();zobrist_init();
+    if(getenv("MIST_M4_LEAF_SCALE"))leaf_scale=atof(getenv("MIST_M4_LEAF_SCALE"));
     if(getenv("MIST_STOCKFISH")){external=m4sf_open(getenv("MIST_STOCKFISH"),1.0);assert(external);}
     history_conformance();chess_carry(WHITE);chess_carry(BLACK);fifty_move_draw();tactical_schedule();m4sf_close(external);
     puts("test_m4_chess: passed");return 0;}

@@ -9,6 +9,7 @@ static void safe_draw(M4SF *sf,int us){
     pos_put(&p,us==WHITE?60:4,us^1,KING);
     pos_put(&p,us==WHITE?57:1,us^1,ROOK);
     Belief b={.items=&p,.count=1,.us=us};M4Search *s=m4_create(us);
+    assert(m4_set_leaf_scale(s,.9));
     m4_set_evaluation(s,sf,1);
     char view[65];observation(&p,us,view);assert(m4_observe(s,view));
     /* For Black, give the history context its preceding White observation.

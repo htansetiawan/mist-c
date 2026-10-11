@@ -122,6 +122,10 @@ int main(void) {
     if(use_m4&&getenv("MIST_STOCKFISH")&&*getenv("MIST_STOCKFISH"))m4sf=m4sf_open(getenv("MIST_STOCKFISH"),1.0);
     int child_alternates=m4sf!=NULL||(getenv("MIST_M4_ALT_CHILDREN")&&atoi(getenv("MIST_M4_ALT_CHILDREN"))!=0);
     m4_set_evaluation(m4,m4sf,child_alternates);
+    double leaf_scale=1;const char *scale_env=getenv("MIST_M4_LEAF_SCALE");
+    if(scale_env){char *end;leaf_scale=strtod(scale_env,&end);if(end==scale_env||*end||!m4_set_leaf_scale(m4,leaf_scale)) {
+        fprintf(stderr,"mist-m4: invalid leaf scale\n");m4sf_close(m4sf);m4_free(m4);return 2;
+    }}
     const int closure=getenv("MIST_M4_CLOSURE")&&atoi(getenv("MIST_M4_CLOSURE"))!=0;
     m4_set_tactical_closure(m4,closure);
     if (use_m4) fprintf(stderr, "mist-m4: evaluator=%s child_alternates=%d kappa=1, fresh-world singleton knowledge; replay=%s\n", m4sf?"bounded-stockfish":"internal",child_alternates,replay_warm ? "searched-prefix" : "cold-prefix");
@@ -206,7 +210,7 @@ int main(void) {
                 const int warmed = m4_decide(m4, &b, &mp, &ignored, &ms);
                 if(closure)fprintf(stderr,"m4-closure: ply=%d prefix=1 scheduled=%d expanded=%d dropped=%d\n",ms.ply,ms.closure_scheduled,ms.closure_expanded,ms.closure_dropped);
                 fprintf(stderr, "mist-m4: prefix ok=%d ply=%d carry=%d offI=%d fresh=%d fallback=%d snapshot=%d seconds=%.4f\n", warmed, ms.ply, ms.carried, ms.off_current, ms.fresh, ms.fallback, ms.snapshot, ms.total_seconds);
-                fprintf(stderr,"m4-prefix-eval: ply=%d ready=%d scored=%d calls=%ld failed=%ld seconds=%.6f\n",ms.ply,m4sf_ready(m4sf),ms.sf_scored_moves,ms.sf_calls,ms.sf_failed,ms.sf_seconds);
+                fprintf(stderr,"m4-prefix-eval: ply=%d ready=%d scored=%d calls=%ld failed=%ld seconds=%.6f scale=%.6f\n",ms.ply,m4sf_ready(m4sf),ms.sf_scored_moves,ms.sf_calls,ms.sf_failed,ms.sf_seconds,leaf_scale);
             }
             char want[8] = ""; int k = 0;
             while (forced[k] && forced[k] != ',' && k < 7) { want[k] = forced[k]; ++k; }
@@ -233,7 +237,7 @@ int main(void) {
         const int twoply = getenv("MIST_SEARCH") && strcmp(getenv("MIST_SEARCH"), "twoply") == 0;
         if (b.count > 0) ok = use_m4 ? m4_decide(m4, &b, &mp, &r, &ms) : twoply ? search_decide(&b, &sp, &r) : gtcfr_decide(&b, &gp, &r);
         if (use_m4) fprintf(stderr, "mist-m4: ok=%d ply=%d found=%d positive=%d carry=%d offI=%d fresh=%d groups=%d expand=%d fallback=%d snapshot=%d setup=%.4f solve=%.4f save=%.4f total=%.4f over=%d active=%.5f enter=%.5f current=%.5f support=%d\n", ok, ms.ply, ms.current_found, ms.current_positive, ms.carried, ms.off_current, ms.fresh, ms.groups, ms.expansions, ms.fallback, ms.snapshot, ms.setup_seconds, ms.solve_seconds, ms.snapshot_seconds, ms.total_seconds, ms.over_budget, ms.active_mass, ms.max_enter, ms.current_mass, ms.purified_support);
-        if(use_m4)fprintf(stderr,"m4-eval: child_alternates=%d ready=%d scored=%d calls=%ld failed=%ld seconds=%.6f\n",ms.child_alternates,m4sf_ready(m4sf),ms.sf_scored_moves,ms.sf_calls,ms.sf_failed,ms.sf_seconds);
+        if(use_m4)fprintf(stderr,"m4-eval: child_alternates=%d ready=%d scored=%d calls=%ld failed=%ld seconds=%.6f scale=%.6f\n",ms.child_alternates,m4sf_ready(m4sf),ms.sf_scored_moves,ms.sf_calls,ms.sf_failed,ms.sf_seconds,leaf_scale);
         if(use_m4&&closure)fprintf(stderr,"m4-closure: ply=%d prefix=0 scheduled=%d expanded=%d dropped=%d\n",ms.ply,ms.closure_scheduled,ms.closure_expanded,ms.closure_dropped);
         if(use_m4&&mp.tactical_witnesses)fprintf(stderr,"m4-witness: scanned=%d complete=%d added=%d candidate_moves=%d\n",ms.witness_scanned,ms.witness_complete,ms.witness_added,ms.witness_candidate_moves);
         if (!ok) {

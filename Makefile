@@ -114,3 +114,10 @@ test_m4_frontier: build/test_m4_frontier
 	./build/test_m4_frontier
 .PHONY: test_m4_frontier
 test_m4: test_m4_frontier
+
+build/test_m4_scale: $(M4_CHESS) $(M4_HDR) src/m4search.h tests/test_m4_scale.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_scale.c -lm -o $@
+test_m4_scale: build/test_m4_scale
+	./build/test_m4_scale
+.PHONY: test_m4_scale
+test_m4: test_m4_scale

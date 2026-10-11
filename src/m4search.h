@@ -40,6 +40,9 @@ void m4_free(M4Search *s);
 void m4_set_evaluation(M4Search *s,M4SF *sf,int child_alternates);
 /* Opt-in bounded threat-alias expansion; values and solver are unchanged. */
 void m4_set_tactical_closure(M4Search *s,int enabled);
+/* Reserve a gap to terminal +/-1 by scaling uncertain nonterminal estimates.
+ * Default 1. Configure before the first saved blueprint; cannot change midgame. */
+int m4_set_leaf_scale(M4Search *s,double scale);
 int m4_observe(M4Search *s,const char view[65]);
 int m4_played(M4Search *s,Move actual);
 int m4_decide(M4Search *s,const Belief *belief,const M4Params *params,
