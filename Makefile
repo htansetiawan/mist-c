@@ -17,13 +17,17 @@ build/test_search: $(SRC) tests/test_search.c src/search.h src/cfr.h src/belief.
 build/test_guard: $(SRC) tests/test_guard.c src/fow.h src/belief.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_guard.c -lm -o $@
 
+build/test_eval: $(SRC) tests/test_eval.c src/eval.h src/fow.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_eval.c -lm -o $@
+
 build/test_front: $(SRC) tests/test_front.c src/front.h src/belief.h src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_front.c -lm -o $@
 
-test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard build/test_front
+test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard build/test_front build/test_eval
 	./build/test_rules tests/vectors.txt
 	./build/test_guard tests/traces.txt
 	./build/test_front
+	./build/test_eval
 	./build/test_belief tests/traces.txt 100000
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25

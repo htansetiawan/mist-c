@@ -3,6 +3,7 @@
 #include "eval.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 static const int kValue[6] = {100, 320, 330, 500, 900, 0};
 
@@ -60,7 +61,49 @@ static int cheapest_attacker(const Position *p, int sq, int color) {
     return best;
 }
 
+void eval_fog(const Position *p, int color, int out[2]) {
+    out[0] = out[1] = 0;
+    const int k = king_square(p, color);
+    if (k < 0) return;
+    const bb_t them = p->by_color[color ^ 1];
+    const int straight = (them & (p->by_type[ROOK] | p->by_type[QUEEN])) != 0;
+    const int diagonal = (them & (p->by_type[BISHOP] | p->by_type[QUEEN])) != 0;
+    const int knights = (them & p->by_type[KNIGHT]) != 0;
+    if (!straight && !diagonal && !knights) return;
+    const bb_t seen = visible_squares(p, color);
+    static const int df[8] = {1, -1, 0, 0, 1, 1, -1, -1}, dr[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+    for (int d = 0; d < 8; ++d) {
+        if (d < 4 ? !straight : !diagonal) continue;
+        for (int f = k % 8 + df[d], r = k / 8 + dr[d]; f >= 0 && f < 8 && r >= 0 && r < 8; f += df[d], r += dr[d]) {
+            const int sq = r * 8 + f;
+            if (p->piece[sq] != NO_PIECE) break;
+            if (!(seen & ((bb_t)1 << sq))) { ++out[0]; break; }
+        }
+    }
+    if (!knights) return;
+    static const int nf[8] = {1, 2, 2, 1, -1, -2, -2, -1}, nr[8] = {2, 1, -1, -2, -2, -1, 1, 2};
+    for (int j = 0; j < 8; ++j) {
+        const int f = k % 8 + nf[j], r = k / 8 + nr[j];
+        if (f < 0 || f > 7 || r < 0 || r > 7) continue;
+        const int sq = r * 8 + f;
+        if (p->piece[sq] == NO_PIECE && !(seen & ((bb_t)1 << sq))) ++out[1];
+    }
+}
+
+/* Centipawns per fog line and per unseen knight square (MIST_FOG_LINE,
+ * MIST_FOG_KNIGHT; read once). Off by default: replaying 24 game-losing and 24
+ * surviving risky decisions plus the 5 arena deaths, 20 or 40 cp a line chose
+ * the safer move no more often than without it (65-71% of the deaths against
+ * 65%, the same mean risk) and changed 60% of quiet moves against 44%. */
+static int fog_line_cp = -1, fog_knight_cp = 0;
+
+static void read_fog_settings(void) {
+    fog_line_cp = getenv("MIST_FOG_LINE") ? atoi(getenv("MIST_FOG_LINE")) : 0;
+    fog_knight_cp = getenv("MIST_FOG_KNIGHT") ? atoi(getenv("MIST_FOG_KNIGHT")) : 0;
+}
+
 int evaluate_cp(const Position *p, int us) {
+    if (fog_line_cp < 0) read_fog_settings();
     int non_pawn = 0;
     for (int t = KNIGHT; t <= QUEEN; ++t) non_pawn += kValue[t] * __builtin_popcountll(p->by_type[t]);
     const int endgame = non_pawn <= 2600;
@@ -72,6 +115,14 @@ int evaluate_cp(const Position *p, int us) {
             score += sign * (kValue[t] + placement(t, sq, color, endgame));
         }
         if (!endgame) score += sign * shelter(p, color);
+        /* a king whose lines run into squares its side cannot see: a hidden
+         * attacker can arrive there unseen (every v26 arena loss, and the
+         * bench's, ended with the king taken by a piece we could not see) */
+        if (fog_line_cp > 0 || fog_knight_cp > 0) {
+            int fog[2];
+            eval_fog(p, color, fog);
+            score -= sign * (fog_line_cp * fog[0] + fog_knight_cp * fog[1]);
+        }
     }
     /* The side to move: its best capture now (victim minus the attacker if the
      * square is defended), counted at 80%: the other side cannot answer it. */
