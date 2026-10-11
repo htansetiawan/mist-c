@@ -42,3 +42,19 @@ build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h src/
 clean:
 	rm -rf build
 .PHONY: test clean
+
+# M4 (Astra): paper-only gadgets, knowledge closure, and blueprint carry-over.
+M4_SRC = src/cfr.c src/gadget.c src/kluss.c
+M4_HDR = src/cfr.h src/gadget.h src/kluss.h
+build/test_gadget: $(M4_SRC) $(M4_HDR) tests/test_gadget.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_gadget.c -lm -o $@
+build/test_kluss: $(M4_SRC) $(M4_HDR) tests/test_kluss.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_kluss.c -lm -o $@
+build/test_gadget_kuhn: $(M4_SRC) $(M4_HDR) tests/test_gadget_kuhn.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_gadget_kuhn.c -lm -o $@
+test_m4: build/test_gadget build/test_kluss build/test_gadget_kuhn
+	./build/test_gadget
+	./build/test_kluss
+	./build/test_gadget_kuhn
+test: test_m4
+.PHONY: test_m4
