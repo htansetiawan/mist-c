@@ -28,6 +28,7 @@ typedef struct {
     int over_budget;
     int child_alternates, sf_scored_moves;
     int closure_scheduled,closure_expanded,closure_dropped;
+    int dominance_complete,dominance_redirected,dominance_changed,dominance_skipped;
     long sf_calls, sf_failed;
     double sf_seconds;
 } M4Stats;
@@ -43,6 +44,9 @@ void m4_set_tactical_closure(M4Search *s,int enabled);
 /* Reserve a gap to terminal +/-1 by scaling uncertain nonterminal estimates.
  * Default 1. Configure before the first saved blueprint; cannot change midgame. */
 int m4_set_leaf_scale(M4Search *s,double scale);
+/* Opt-in finite-solve dominance correction, default off. Configure before
+ * capturing the first blueprint; changes the executed and carried policy. */
+int m4_set_root_dominance(M4Search *s,int enabled);
 int m4_observe(M4Search *s,const char view[65]);
 int m4_played(M4Search *s,Move actual);
 int m4_decide(M4Search *s,const Belief *belief,const M4Params *params,

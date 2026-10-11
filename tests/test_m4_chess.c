@@ -41,6 +41,8 @@ static void chess_carry(int us) {
     assert(m4_set_leaf_scale(s,leaf_scale));
     m4_set_evaluation(s,external,external!=NULL);
     m4_set_tactical_closure(s,getenv("MIST_M4_CLOSURE")!=NULL);
+    int dominance=getenv("MIST_M4_DOMINANCE")!=NULL;
+    assert(m4_set_root_dominance(s,dominance));
     M4Params params={12,30000,40,16,2,2.0,19,0};
     int carried=0,off=0;
     for(int decision=0;decision<4;++decision) {
@@ -52,6 +54,8 @@ static void chess_carry(int us) {
         MoveList l;generate_moves(&p,&l);int found=0;for(int a=0;a<l.count;++a)found|=l.moves[a]==r.move;assert(found);
         assert(st.snapshot);assert(r.iterations>0);assert(r.nodes<=params.max_nodes);
         assert(!st.over_budget);assert(st.purified_support>=1&&st.purified_support<=3);
+        if(dominance)assert(st.dominance_complete&&!st.dominance_skipped);
+        assert(m4_set_root_dominance(s,dominance));assert(!m4_set_root_dominance(s,!dominance));
         if(external)assert(m4sf_ready(external)&&st.sf_calls>0&&!st.sf_failed);
         char uci[6];move_to_uci(r.move,uci);
         printf("M4 chess us=%d turn=%d move=%s carried=%d off-I=%d fresh=%d nodes=%d iters=%d %.4fs fallback=%d sf_calls=%ld\n",us,decision,uci,st.carried,st.off_current,st.fresh,r.nodes,r.iterations,st.total_seconds,st.fallback,st.sf_calls);

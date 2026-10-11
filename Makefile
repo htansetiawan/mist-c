@@ -45,7 +45,7 @@ clean:
 
 # M4 (Astra): paper-only gadgets, knowledge closure, and blueprint carry-over.
 M4_SRC = src/cfr.c src/gadget.c src/kluss.c
-M4_HDR = src/cfr.h src/gadget.h src/kluss.h
+M4_HDR = src/cfr.h src/gadget.h src/kluss.h src/m4policy.h
 build/test_gadget: $(M4_SRC) $(M4_HDR) tests/test_gadget.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) tests/test_gadget.c -lm -o $@
 build/test_kluss: $(M4_SRC) $(M4_HDR) tests/test_kluss.c
@@ -69,7 +69,7 @@ test: test_m4
 .PHONY: test_m4
 
 # Experimental standalone M4 adapter; active build/mist stays unchanged.
-M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4frontier.c src/m4search.c src/m4sf.c
+M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4frontier.c src/m4policy.c src/m4search.c src/m4sf.c
 build/test_m4_chess: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4frontier.h src/m4search.h src/m4sf.h tests/test_m4_chess.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_chess.c -lm -o $@
 build/mist-m4: $(M4_CHESS) src/m4main.c $(M4_HDR) src/m4sample.h src/m4frontier.h src/m4search.h src/m4sf.h
@@ -121,3 +121,10 @@ test_m4_scale: build/test_m4_scale
 	./build/test_m4_scale
 .PHONY: test_m4_scale
 test_m4: test_m4_scale
+
+build/test_m4_policy: $(M4_SRC) $(M4_HDR) src/m4policy.c src/m4policy.h tests/test_m4_policy.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_SRC) src/m4policy.c tests/test_m4_policy.c -lm -o $@
+test_m4_policy: build/test_m4_policy
+	./build/test_m4_policy
+.PHONY: test_m4_policy
+test_m4: test_m4_policy

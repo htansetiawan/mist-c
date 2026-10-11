@@ -4,6 +4,7 @@
 #include "eval.h"
 #include "m4sample.h"
 #include "m4frontier.h"
+#include "m4policy.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ struct M4Search {
     int tactical_closure;
     int snapshot_ply;
     double leaf_scale;
+    int root_dominance;
     double *trace_alternates;
     int trace_groups;
 };
@@ -71,6 +73,10 @@ void m4_set_tactical_closure(M4Search *s,int enabled){if(s)s->tactical_closure=e
 int m4_set_leaf_scale(M4Search *s,double scale) {
     if(!s||!isfinite(scale)||scale<=0||scale>1||(s->blueprint.valid&&scale!=s->leaf_scale))return 0;
     s->leaf_scale=scale;return 1;
+}
+int m4_set_root_dominance(M4Search *s,int enabled) {
+    if(!s||(enabled!=0&&enabled!=1)||(s->blueprint.valid&&enabled!=s->root_dominance))return 0;
+    s->root_dominance=enabled;return 1;
 }
 int m4_observe(M4Search *s,const char view[65]) {
     if(!s||!valid_view(view))return 0;
@@ -463,6 +469,38 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
                 double *v=malloc((size_t)n*sizeof(double)),*cf=malloc((size_t)n*sizeof(double)),*op=malloc((size_t)n*sizeof(double));
                 double total=0,value=0;
                 int measured=v&&cf&&op&&kluss_blueprint_stats(&snapshot,v,cf,op);
+                if(s->root_dominance&&measured) {
+                    double risk[256]={0},av[256]={0},mass=0,redirected[256];int map[256],complete=1;
+                    /* A partial prefix of the roots is not an admissible risk
+                     * estimate. On deadline, discard all profile work. Reserve
+                     * the last 15% for retargeting and the original snapshot. */
+                    for(int r=0;r<nr;++r) {
+                        if(now()>=start+p->seconds*.85){complete=0;break;}
+                        int h=gadget.node_map[roots[r].node];if(t.board[h].own!=s->own)continue;
+                        double w=cf[h]*op[h];if(w<=0)continue;mass+=w;
+                        const GameNode *node=&snapshot.tree.nodes[h];
+                        for(int a=0;a<legal.count;++a) {
+                            Position child=t.board[h].pos;Undo undo;make_move(&child,legal.moves[a],&undo);
+                            if(king_square(&child,s->us^1)>=0&&mover_left_king_capturable(&child))risk[a]+=w;
+                            av[a]+=w*v[snapshot.tree.child[node->first+a]];
+                        }
+                    }
+                    if(complete&&mass>0&&now()<start+p->seconds*.85) {
+                        for(int a=0;a<legal.count;++a){risk[a]/=mass;av[a]/=mass;}
+                        int changed=m4_policy_redirect(risk,av,play,legal.count,redirected,map);
+                        stats->dominance_complete=changed>=0;
+                        if(changed>0) {
+                            if(m4_policy_retarget(&snapshot,root_I,redirected,v,cf,op)) {
+                                stats->dominance_redirected=changed;stats->dominance_changed=map[chosen]!=chosen;
+                                chosen=map[chosen];memcpy(play,redirected,(size_t)legal.count*sizeof(double));
+                                memcpy(x+o,play,(size_t)legal.count*sizeof(double));
+                                out->move=legal.moves[chosen];out->probability=play[chosen];
+                                stats->purified_support=0;
+                                for(int a=0;a<legal.count;++a)stats->purified_support+=play[a]>0;
+                            } else {measured=0;stats->dominance_skipped=2;}
+                        } else if(changed<0)stats->dominance_skipped=3;
+                    } else stats->dominance_skipped=1;
+                }
                 if(measured)for(int r=0;r<nr;++r) {
                     int h=gadget.node_map[roots[r].node];if(t.board[h].own==s->own){double w=cf[h]*op[h];total+=w;value+=w*v[h];}
                 }
