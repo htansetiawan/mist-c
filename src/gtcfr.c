@@ -27,6 +27,7 @@ typedef struct {
     int cap_visits;
     int us;
     double root_loss;            /* our root move leaving our king capturable: -kappa */
+    int best_init;               /* new information sets start on their best child */
     unsigned long long rng;
 } Tree;
 
@@ -136,7 +137,20 @@ static int expand(Tree *t, int index) {
     const int count = build_children(t, &leaf.pos, leaf.hist, kids, NULL);
     if (count == 0) return 0;
     const int player = leaf.pos.side == t->us ? 0 : 1;
+    const int before = t->g.n_infosets;
     const int I = infoset_for(t, player, leaf.hist[player], count);
+    if (t->g.n_infosets > before && t->best_init) {
+        /* a new information set starts on its best child by the leaf values
+         * (the highest for us, the lowest for the opponent) instead of
+         * uniformly: a uniform opponent averages its blunders and hides the
+         * reply that punishes our move until the solver finds it */
+        int best = 0;
+        for (int a = 1; a < count; ++a) {
+            const double va = t->g.nodes[kids[a]].value, vb = t->g.nodes[kids[best]].value;
+            if (player == 0 ? va > vb : va < vb) best = a;
+        }
+        game_start_on(&t->g, I, best);
+    }
     game_expand_leaf(&t->g, leaf.node, player, I, kids, count);
     t->leaf_of[leaf.node] = -1;
     return 1;
@@ -202,6 +216,7 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     Tree t; memset(&t, 0, sizeof(t));
     game_init(&t.g); t.us = b->us; t.rng = params->seed ^ 0x67746366ULL;
     t.root_loss = params->king_risk > 1.0 ? -params->king_risk : -1.0;
+    t.best_init = !(getenv("MIST_BEST_INIT") && atoi(getenv("MIST_BEST_INIT")) == 0);
     /* I: positions of P drawn by weight (belief_sample), each with its share */
     const int draws = params->samples > 0 ? params->samples : 1;
     int *idx = malloc(draws * sizeof(int));
@@ -239,7 +254,7 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
      * Stockfish: at a few milliseconds a call it would take K x |moves| calls;
      * its depth-1 search already answers each move's captures, and the tree
      * grows where the strategy goes */
-    if (!sf_ready())
+    if (!sf_ready() || getenv("MIST_TWOPLY"))
         for (int i = 0, n = t.n_leaves; i < n && t.g.n_nodes < params->max_nodes; ++i)
             if (t.leaf_of[t.leaves[i].node] == i) expand(&t, i);
     game_grow(&t.g);

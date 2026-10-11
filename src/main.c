@@ -146,6 +146,12 @@ int main(void) {
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
         GtcfrParams gp = {budget >= 3.0 ? 256 : 128, budget, 1500000, 32, 10, seed + (unsigned long long)decisions, NULL, 0, kappa};
+        /* With Stockfish at about 1 ms a call, 256 worlds spread the search too
+         * thin to find the opponent's punishing reply: at v32's 21 decisions
+         * that lost 3+ points to a top-six team, 256 worlds repeated the losing
+         * move 11-13 times, 32 worlds 7-9, Misty (32 worlds) 5-6 */
+        if (sf_ready()) gp.samples = 32;
+        if (getenv("MIST_SAMPLES")) gp.samples = atoi(getenv("MIST_SAMPLES"));
         if (remaining < 20) { gp.samples = 32; gp.seconds = 0.3; }
         MoveList allowed;
         view_moves(view, us, front.castle, &allowed);

@@ -11,6 +11,7 @@ void game_free(Game *g) {
     free(g->nodes); free(g->child); free(g->prob);
     free(g->is_player); free(g->is_actions); free(g->is_offset);
     free(g->regret); free(g->last); free(g->strategy); free(g->strategy_sum);
+    free(g->pending);
     memset(g, 0, sizeof(*g));
 }
 
@@ -53,22 +54,40 @@ void game_children(Game *g, int node, const int *children, const double *p, int 
     g->n_edges += count;
 }
 
+static void apply_pending(Game *g);
+
 void game_finalize(Game *g) {
     g->regret = calloc(g->n_slots, sizeof(double));
     g->last = calloc(g->n_slots, sizeof(double));
     g->strategy = calloc(g->n_slots, sizeof(double));
     g->strategy_sum = calloc(g->n_slots, sizeof(double));
     g->finalized_slots = g->n_slots;
+    apply_pending(g);
+}
+
+static void apply_pending(Game *g) {
+    for (int i = 0; i < g->n_pending; ++i)
+        if (g->pending[i] < g->finalized_slots) g->regret[g->pending[i]] = 1e-9;
+    g->n_pending = 0;
+}
+
+void game_start_on(Game *g, int infoset, int action) {
+    if (g->n_pending == g->cap_pending) {
+        g->cap_pending = g->cap_pending ? 2 * g->cap_pending : 1024;
+        g->pending = realloc(g->pending, g->cap_pending * sizeof(int));
+    }
+    g->pending[g->n_pending++] = g->is_offset[infoset] + action;
 }
 
 void game_grow(Game *g) {
-    if (g->n_slots <= g->finalized_slots) return;
+    if (g->n_slots <= g->finalized_slots) { apply_pending(g); return; }
     double **arrays[4] = {&g->regret, &g->last, &g->strategy, &g->strategy_sum};
     for (int i = 0; i < 4; ++i) {
         *arrays[i] = realloc(*arrays[i], g->n_slots * sizeof(double));
         memset(*arrays[i] + g->finalized_slots, 0, (g->n_slots - g->finalized_slots) * sizeof(double));
     }
     g->finalized_slots = g->n_slots;
+    apply_pending(g);
 }
 
 void game_expand_leaf(Game *g, int node, int player, int infoset, const int *children, int count) {

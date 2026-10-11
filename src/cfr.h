@@ -29,6 +29,7 @@ typedef struct {
     int finalized_slots;                                 /* slots the solver arrays cover */
     double *regret, *last, *strategy, *strategy_sum;     /* per slot */
     int root;
+    int *pending; int n_pending, cap_pending;           /* slots to start pure on (game_start_on) */
 } Game;
 
 void game_init(Game *g);
@@ -44,6 +45,10 @@ void game_finalize(Game *g);                             /* allocates solver arr
  * every node index stays valid and the solver keeps what it learned. */
 void game_grow(Game *g);
 void game_expand_leaf(Game *g, int node, int player, int infoset, const int *children, int count);
+/* A new information set's first strategy: all weight on `action` (paper,
+ * C.5: "we instead set it by placing all weight on the best child"), applied
+ * when the solver arrays next grow. */
+void game_start_on(Game *g, int infoset, int action);
 
 /* One iteration of alternating PCFR+: update player 0, then player 1. */
 void pcfr_iteration(Game *g, int t);
