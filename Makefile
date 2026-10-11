@@ -69,12 +69,12 @@ test: test_m4
 .PHONY: test_m4
 
 # Experimental standalone M4 adapter; active build/mist stays unchanged.
-M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4search.c src/m4sf.c
-build/test_m4_chess: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h src/m4sf.h tests/test_m4_chess.c
+M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4frontier.c src/m4search.c src/m4sf.c
+build/test_m4_chess: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4frontier.h src/m4search.h src/m4sf.h tests/test_m4_chess.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_chess.c -lm -o $@
-build/mist-m4: $(M4_CHESS) src/m4main.c $(M4_HDR) src/m4sample.h src/m4search.h src/m4sf.h
+build/mist-m4: $(M4_CHESS) src/m4main.c $(M4_HDR) src/m4sample.h src/m4frontier.h src/m4search.h src/m4sf.h
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) src/m4main.c -lm -o $@
-build/test_m4_sample: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h src/m4sf.h tests/test_m4_sample.c
+build/test_m4_sample: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4frontier.h src/m4search.h src/m4sf.h tests/test_m4_sample.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_sample.c -lm -o $@
 test_m4_chess: build/test_m4_chess build/test_m4_sample
 	./build/test_m4_chess
@@ -106,3 +106,11 @@ test_m4_escape: build/test_m4_escape
 	./build/test_m4_escape
 .PHONY: test_m4_escape
 test_m4: test_m4_escape
+
+# Bounded tactical scheduling (disabled unless explicitly enabled).
+build/test_m4_frontier: src/m4frontier.c src/m4frontier.h tests/test_m4_frontier.c
+	mkdir -p build && $(CC) $(CFLAGS) src/m4frontier.c tests/test_m4_frontier.c -o $@
+test_m4_frontier: build/test_m4_frontier
+	./build/test_m4_frontier
+.PHONY: test_m4_frontier
+test_m4: test_m4_frontier

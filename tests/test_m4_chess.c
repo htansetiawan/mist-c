@@ -38,6 +38,7 @@ static void chess_carry(int us) {
     Position p;pos_start(&p);Belief b;belief_init_start(&b,us,20000);
     M4Search *s=m4_create(us);assert(s);char view[65];observation(&p,us,view);assert(m4_observe(s,view));
     m4_set_evaluation(s,external,external!=NULL);
+    m4_set_tactical_closure(s,getenv("MIST_M4_CLOSURE")!=NULL);
     M4Params params={12,30000,40,16,2,2.0,19,0};
     int carried=0,off=0;
     for(int decision=0;decision<4;++decision) {
@@ -64,13 +65,27 @@ static void fifty_move_draw(void) {
     pos_put(&p,6,WHITE,KING);pos_put(&p,60,BLACK,KING);pos_put(&p,57,BLACK,ROOK);
     Belief b={.items=&p,.count=1,.us=WHITE};M4Search *s=m4_create(WHITE);
     m4_set_evaluation(s,external,external!=NULL);
+    m4_set_tactical_closure(s,getenv("MIST_M4_CLOSURE")!=NULL);
     char view[65];observation(&p,WHITE,view);assert(m4_observe(s,view));
     M4Params params={1,10000,100,16,2,1.0,21,0};SearchResult r;M4Stats st;
     assert(m4_decide(s,&b,&params,&r,&st));assert(st.snapshot&&r.value==0);
     Position q=p;Undo u;make_move(&q,r.move,&u);assert(q.halfmove==100&&!mover_left_king_capturable(&q));
     m4_free(s);puts("M4 50-move terminal: draw overrides heuristic evaluation passed");
 }
+static void tactical_schedule(void) {
+    Position p;pos_start(&p);const char *line[]={"e2e4","d7d5","e4d5","d8d5"};
+    for(int i=0;i<4;++i){Move m=from_uci(&p,line[i]);Undo u;make_move(&p,m,&u);}
+    Belief b={.items=&p,.count=1,.us=WHITE};M4Search *s=m4_create(WHITE);char view[65];
+    observation(&p,WHITE,view);assert(m4_observe(s,view));m4_set_tactical_closure(s,1);
+    m4_set_evaluation(s,external,external!=NULL);
+    M4Params params={1,40000,200,32,10,2.0,21,0};M4Stats st;SearchResult r;
+    assert(m4_decide(s,&b,&params,&r,&st));assert(st.snapshot&&!st.over_budget);
+    assert(st.closure_scheduled>0&&st.closure_expanded>0&&!st.closure_dropped);
+    MoveList l;generate_moves(&p,&l);int legal=0;for(int i=0;i<l.count;++i)legal|=l.moves[i]==r.move;assert(legal);
+    printf("M4 tactical scheduler: scheduled=%d expanded=%d dropped=%d snapshot=%d\n",st.closure_scheduled,st.closure_expanded,st.closure_dropped,st.snapshot);
+    m4_free(s);
+}
 int main(void){fow_init();zobrist_init();
     if(getenv("MIST_STOCKFISH")){external=m4sf_open(getenv("MIST_STOCKFISH"),1.0);assert(external);}
-    history_conformance();chess_carry(WHITE);chess_carry(BLACK);fifty_move_draw();m4sf_close(external);
+    history_conformance();chess_carry(WHITE);chess_carry(BLACK);fifty_move_draw();tactical_schedule();m4sf_close(external);
     puts("test_m4_chess: passed");return 0;}

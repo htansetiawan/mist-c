@@ -3,6 +3,7 @@
 #include "kluss.h"
 #include "eval.h"
 #include "m4sample.h"
+#include "m4frontier.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,8 @@ typedef struct {
     uint64_t rng;
     M4SF *sf;
     int sf_scored_moves;
+    M4Frontier *frontier;
+    int scheduled,priority_expanded;
 } ChessTree;
 struct M4Search {
     KlussBlueprint blueprint;
@@ -39,6 +42,7 @@ struct M4Search {
     int reference_valid;
     M4SF *sf;
     int child_alternates;
+    int tactical_closure;
 };
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static uint64_t random64(uint64_t *s) {
@@ -59,6 +63,7 @@ M4Search *m4_create(int us) {
 }
 void m4_free(M4Search *s){if(s){kluss_blueprint_free(&s->blueprint);free(s->board);free(s);}}
 void m4_set_evaluation(M4Search *s,M4SF *sf,int child_alternates){if(s){s->sf=sf;s->child_alternates=child_alternates!=0;}}
+void m4_set_tactical_closure(M4Search *s,int enabled){if(s)s->tactical_closure=enabled!=0;}
 int m4_observe(M4Search *s,const char view[65]) {
     if(!s||!valid_view(view))return 0;
     if(!s->seen){s->own=history_mix(0,view_hash(view));s->seen=1;}
@@ -82,7 +87,7 @@ static int reserve_boards(ChessTree *t,int count) {
     BoardNode *p=realloc(t->board,(size_t)n*sizeof(*p));if(!p){t->failed=1;return 0;}
     memset(p+t->capacity,0,(size_t)(n-t->capacity)*sizeof(*p));t->board=p;t->capacity=n;return 1;
 }
-static void tree_free(ChessTree *t){free(t->board);free(t->info);free(t->visits);memset(t,0,sizeof(*t));}
+static void tree_free(ChessTree *t){free(t->board);free(t->info);free(t->visits);m4_frontier_free(t->frontier);memset(t,0,sizeof(*t));}
 /* View-proven actions avoid silently giving a player hidden en-passant rights.
  * This is conservative: ambiguous EP can be omitted, never made clairvoyant.
  * The actual rules, rather than this action restriction, determine terminals. */
@@ -128,6 +133,15 @@ static int reindex(ChessTree *t) {
     }
     return 1;
 }
+/* Schedule own-turn aliases as a group; never use hidden state as the
+ * actual policy key. The same perfect-recall history drives infoset(). */
+static void schedule(ChessTree *t,int h) {
+    BoardNode *b=&t->board[h];
+    if(!t->frontier||!b->valid||!b->live||b->pos.side!=t->us||t->game->nodes[h].type!=NODE_TERMINAL)return;
+    int king=king_square(&b->pos,t->us);
+    int danger=king>=0&&is_attacked(&b->pos,king,t->us^1);
+    t->scheduled+=m4_frontier_add(t->frontier,b->own,b->ply,h,danger);
+}
 static int expand(ChessTree *t,int h) {
     if(h>=t->capacity||!t->board[h].valid||!t->board[h].live||t->game->nodes[h].type!=NODE_TERMINAL)return 0;
     if(now()>=t->deadline)return 0;
@@ -161,6 +175,7 @@ static int expand(ChessTree *t,int h) {
         double score=mover==t->us?value:-value;if(score>best_value){best_value=score;best=a;}
         if(t->gadget)value=gadget_leaf_value(t->gadget,child.group,value);
         kids[a]=game_node(t->game,NODE_TERMINAL,0,-1,value);t->board[kids[a]]=child;
+        schedule(t,kids[a]);
     }
     game_expand_leaf(t->game,h,parent.pos.side==t->us?0:1,I,kids,l.count);
     t->board[h].child_bound=best_value*(parent.pos.side==t->us?1:-1);
@@ -363,12 +378,20 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     game_grow(&raw);x=malloc((size_t)(raw.n_slots+1)*sizeof(double));if(!x)goto done;pcfr_current(&raw,x);
     if(!gadget_build(&raw,roots,nr,groups,ng,&gadget)||!gadget_seed_blueprint(&gadget,&raw,x))goto done;
     if(gadget.game.n_nodes>p->max_nodes)goto done;
-    ChessTree next=t;next.board=NULL;next.capacity=0;next.info=NULL;next.info_size=next.info_count=0;next.visits=NULL;next.visit_capacity=0;
+    ChessTree next=t;next.board=NULL;next.capacity=0;next.info=NULL;next.info_size=next.info_count=0;next.visits=NULL;next.visit_capacity=0;next.frontier=NULL;
     next.game=&gadget.game;next.gadget=&gadget;next.max_nodes=p->max_nodes;
     if(!reserve_boards(&next,gadget.game.n_nodes)){tree_free(&next);goto done;}
     for(int h=0;h<raw.n_nodes;++h)if(gadget.node_map[h]>=0&&h<t.capacity)next.board[gadget.node_map[h]]=t.board[h];
     tree_free(&t);t=next;game_free(&raw);free(x);x=NULL;
     if(!reindex(&t))goto done;
+    if(s->tactical_closure) {
+        t.frontier=m4_frontier_create(p->max_nodes<65536?p->max_nodes:65536);
+        if(!t.frontier)goto done;
+        for(int h=0;h<t.game->n_nodes;++h) {
+            if((h&255)==0&&now()>=t.deadline)goto done;
+            if(h<t.capacity)schedule(&t,h);
+        }
+    }
     for(int r=0;r<nr;++r) {
         int h=gadget.node_map[roots[r].node];
         if(t.board[h].own==s->own&&gadget.game.nodes[h].type==NODE_PLAYER) {
@@ -390,7 +413,16 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
         }
         if(!iteration)break;
         for(int k=0;k<p->expansions_per_round&&now()<t.deadline;++k) {
-            stats->expansions+=expansion(&t,solver.strategy,solver.slots,solver.root_weight,explorer);explorer^=1;
+            int expanded=0;
+            if(t.frontier&&(k&1)==0) {
+                int h;
+                while(now()<t.deadline&&(h=m4_frontier_pop(t.frontier))>=0) {
+                    if(h>=t.capacity||!t.board[h].live||t.game->nodes[h].type!=NODE_TERMINAL)continue;
+                    expanded=expand(&t,h);t.priority_expanded+=expanded;break;
+                }
+            }
+            if(!expanded){expanded=expansion(&t,solver.strategy,solver.slots,solver.root_weight,explorer);explorer^=1;}
+            stats->expansions+=expanded;
             if(t.failed)goto done;
         }
     }
@@ -464,6 +496,8 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     ok=1;
 done:
     stats->sf_scored_moves=t.sf_scored_moves;
+    stats->closure_scheduled=t.scheduled;stats->closure_expanded=t.priority_expanded;
+    stats->closure_dropped=m4_frontier_dropped(t.frontier);
     M4SFStats sf_after;m4sf_stats(s->sf,&sf_after);
     stats->sf_calls=sf_after.calls-sf_before.calls;stats->sf_failed=sf_after.failed-sf_before.failed;stats->sf_seconds=sf_after.seconds-sf_before.seconds;
     free(roots);free(groups);free(sample);free(excluded);free(x);tree_free(&t);
