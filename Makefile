@@ -128,3 +128,22 @@ test_m4_policy: build/test_m4_policy
 	./build/test_m4_policy
 .PHONY: test_m4_policy
 test_m4: test_m4_policy
+
+# Offline observation-aware opponent-prior experiment; not linked into either bot.
+build/m4_move_features: src/board.c src/movemodel.c src/m4movefeatures.c src/m4movefeatures.h tools/m4_move_features.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c src/movemodel.c src/m4movefeatures.c tools/m4_move_features.c -lm -o $@
+build/test_m4_movefeatures: src/board.c src/movemodel.c src/m4movefeatures.c src/m4movefeatures.h tests/test_m4_movefeatures.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c src/movemodel.c src/m4movefeatures.c tests/test_m4_movefeatures.c -lm -o $@
+test_m4_movefeatures: build/test_m4_movefeatures
+	./build/test_m4_movefeatures
+.PHONY: test_m4_movefeatures
+
+build/m4_move_bench: src/board.c src/movemodel.c src/m4movefeatures.c src/m4movefeatures.h tools/m4_move_bench.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c src/movemodel.c src/m4movefeatures.c tools/m4_move_bench.c -lm -o $@
+build/m4_prior_replay: src/board.c src/belief.c src/front.c src/eval.c src/movemodel.c src/m4movefeatures.c src/m4movefeatures.h tools/m4_prior_replay.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c src/belief.c src/front.c src/eval.c src/movemodel.c src/m4movefeatures.c tools/m4_prior_replay.c -Wl,--wrap=move_logits -lm -o $@
+build/test_m4_resample: src/m4resample.c src/m4resample.h tests/test_m4_resample.c
+	mkdir -p build && $(CC) $(CFLAGS) src/m4resample.c tests/test_m4_resample.c -lm -o $@
+test_m4_resample: build/test_m4_resample
+	./build/test_m4_resample
+.PHONY: test_m4_resample
