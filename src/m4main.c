@@ -85,6 +85,38 @@ static double move_budget(double remaining, double increment, double max_seconds
     return budget;
 }
 
+/* Offline, post-selection inspection only. Resolve requested actions against
+ * the observation-derived action list; never accept a supplied hidden board.
+ * Every export reads the same saved tree without a new solve. */
+static void trace_alternatives(const M4Search *s,const MoveList *allowed,const char *path) {
+    const char *list=getenv("MIST_M4_TRACE_MOVES");if(!list||!*list)return;
+    Move moves[8];char names[8][6];int count=0;
+    while(*list) {
+        const char *end=strchr(list,',');size_t len=end?(size_t)(end-list):strlen(list);
+        if(count==8||(len!=4&&len!=5))goto invalid;
+        memcpy(names[count],list,len);names[count][len]=0;
+        int found=0;
+        for(int i=0;i<allowed->count;++i) {
+            char uci[6];move_to_uci(allowed->moves[i],uci);
+            if(!strcmp(uci,names[count])){moves[count]=allowed->moves[i];found=1;break;}
+        }
+        if(!found)goto invalid;
+        for(int i=0;i<count;++i)if(moves[i]==moves[count])goto invalid;
+        ++count;if(!end)break;list=end+1;if(!*list)goto invalid;
+    }
+    size_t size=strlen(path)+8;char *filename=malloc(size);if(!filename)goto invalid;
+    for(int i=0;i<count;++i) {
+        snprintf(filename,size,"%s.%s",path,names[i]);
+        double begin=now_seconds();FILE *trace=fopen(filename,"w");
+        int complete=trace&&m4_trace_last(s,moves[i],trace,20000);
+        if(trace&&fclose(trace)!=0)complete=0;
+        fprintf(stderr,"m4-trace-alt: move=%s complete=%d seconds=%.6f\n",names[i],complete,now_seconds()-begin);
+    }
+    free(filename);return;
+invalid:
+    fprintf(stderr,"m4-trace-alt: invalid list (1..8 unique observation-allowed UCI moves required)\n");
+}
+
 int main(void) {
     char line[256];
     if (!fgets(line, sizeof line, stdin) || strncmp(line, "fow", 3) != 0) return 0;
@@ -298,6 +330,7 @@ int main(void) {
             int traced=trace&&m4_trace_last(m4,r.move,trace,20000);
             if(trace&&fclose(trace)!=0)traced=0;
             fprintf(stderr,"m4-trace: complete=%d seconds=%.6f\n",traced,now_seconds()-begin);
+            trace_alternatives(m4,&allowed,trace_path);
         }
         if (getenv("MIST_RISK")) {   /* diagnostics: each allowed move's risk on P */
             for (int i = 0; i < allowed.count; ++i) {

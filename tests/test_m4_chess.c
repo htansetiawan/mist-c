@@ -99,7 +99,15 @@ static void tactical_schedule(void) {
     assert(st.closure_scheduled>0&&st.closure_expanded>0&&!st.closure_dropped);
     MoveList l;generate_moves(&p,&l);int legal=0;for(int i=0;i<l.count;++i)legal|=l.moves[i]==r.move;assert(legal);
     uint64_t before=m4_own_history(s);FILE *trace=tmpfile();assert(trace);
-    assert(m4_trace_last(s,r.move,trace,20000));assert(ftell(trace)>100);fclose(trace);
+    assert(m4_trace_last(s,r.move,trace,20000));assert(ftell(trace)>100);
+    /* Reading an alternative must not alter the original continuation. */
+    Move other=l.moves[0]==r.move?l.moves[1]:l.moves[0];
+    FILE *alternate=tmpfile(),*again=tmpfile();assert(alternate&&again);
+    assert(m4_trace_last(s,other,alternate,20000));
+    assert(m4_trace_last(s,r.move,again,20000));
+    rewind(trace);rewind(again);int byte;
+    do {byte=fgetc(trace);assert(byte==fgetc(again));}while(byte!=EOF);
+    fclose(trace);fclose(alternate);fclose(again);
     trace=tmpfile();assert(trace);assert(!m4_trace_last(s,r.move,trace,1));fclose(trace);
     assert(m4_own_history(s)==before);
     printf("M4 tactical scheduler: scheduled=%d expanded=%d dropped=%d snapshot=%d\n",st.closure_scheduled,st.closure_expanded,st.closure_dropped,st.snapshot);

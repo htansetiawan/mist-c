@@ -6,6 +6,16 @@ blueprint after the move has been selected; it does not expand nodes or
 update any strategy. Trace CPU/I/O time is reported separately. Do not use
 instrumented end-to-end latency as a playing-clock benchmark.
 
+`MIST_M4_TRACE_MOVES=a4c3,d4c3,d4d2,d4f4` additionally inspects up to eight
+unique observation-allowed alternatives in the **same saved tree**. Files use
+the primary trace path plus `.<uci>`. Requests are handled only after selection
+in the forced-replay frontend; they do not nominate a true hidden board or
+rerun search. The Python probe's `--trace-moves` requires `--trace-continuation`
+and checks that every export has identical root states, values and reaches.
+The C fixture verifies that exporting an alternative leaves the original
+selected-move trace byte-identical. These are counterfactual tree readings,
+not newly searched variations or proof of an action's true value.
+
 For each current own-information-set board root, the trace includes its
 effective alternate, counterfactual/opponent reaches, current strategy, board
 and raw value. It then records the selected own move and every represented
