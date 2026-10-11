@@ -7,6 +7,7 @@
 #define MIST_M4SEARCH_H
 #include "search.h"
 #include "m4sf.h"
+#include <stdio.h>
 
 typedef struct M4Search M4Search;
 typedef struct {
@@ -46,4 +47,9 @@ int m4_decide(M4Search *s,const Belief *belief,const M4Params *params,
 /* Read-only diagnostics, for protocol/history conformance tests. */
 uint64_t m4_own_history(const M4Search *s);
 int m4_ply(const M4Search *s);
+/* Offline-only JSONL export AFTER a decision: each current root, the chosen
+ * move and all represented opponent replies. Does not run/alter search.
+ * Returns 1 for a complete trace, 0 for unavailable/invalid/truncated output.
+ * CPU/I/O cost belongs to diagnostics, not the decision's search budget. */
+int m4_trace_last(const M4Search *s,Move chosen,FILE *out,int max_records);
 #endif

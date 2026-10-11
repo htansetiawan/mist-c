@@ -82,6 +82,10 @@ static void tactical_schedule(void) {
     assert(m4_decide(s,&b,&params,&r,&st));assert(st.snapshot&&!st.over_budget);
     assert(st.closure_scheduled>0&&st.closure_expanded>0&&!st.closure_dropped);
     MoveList l;generate_moves(&p,&l);int legal=0;for(int i=0;i<l.count;++i)legal|=l.moves[i]==r.move;assert(legal);
+    uint64_t before=m4_own_history(s);FILE *trace=tmpfile();assert(trace);
+    assert(m4_trace_last(s,r.move,trace,20000));assert(ftell(trace)>100);fclose(trace);
+    trace=tmpfile();assert(trace);assert(!m4_trace_last(s,r.move,trace,1));fclose(trace);
+    assert(m4_own_history(s)==before);
     printf("M4 tactical scheduler: scheduled=%d expanded=%d dropped=%d snapshot=%d\n",st.closure_scheduled,st.closure_expanded,st.closure_dropped,st.snapshot);
     m4_free(s);
 }

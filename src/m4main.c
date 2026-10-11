@@ -270,6 +270,13 @@ int main(void) {
                 fclose(dump);
             } else fprintf(stderr,"mist-m4: belief dump unavailable\n");
         }
+        const char *trace_path=getenv("MIST_M4_TRACE_PATH");
+        if(use_m4&&forced&&!*forced&&trace_path) {
+            double begin=now_seconds();FILE *trace=fopen(trace_path,"w");
+            int traced=trace&&m4_trace_last(m4,r.move,trace,20000);
+            if(trace&&fclose(trace)!=0)traced=0;
+            fprintf(stderr,"m4-trace: complete=%d seconds=%.6f\n",traced,now_seconds()-begin);
+        }
         if (getenv("MIST_RISK")) {   /* diagnostics: each allowed move's risk on P */
             for (int i = 0; i < allowed.count; ++i) {
                 char u[6]; move_to_uci(allowed.moves[i], u);

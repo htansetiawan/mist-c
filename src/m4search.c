@@ -43,6 +43,9 @@ struct M4Search {
     M4SF *sf;
     int child_alternates;
     int tactical_closure;
+    int snapshot_ply;
+    double *trace_alternates;
+    int trace_groups;
 };
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static uint64_t random64(uint64_t *s) {
@@ -59,9 +62,9 @@ static int valid_view(const char *v) {
 M4Search *m4_create(int us) {
     if(us!=WHITE&&us!=BLACK)return NULL;
     M4Search *s=calloc(1,sizeof(*s));if(!s)return NULL;
-    kluss_blueprint_init(&s->blueprint);s->us=us;s->next_scope=1;return s;
+    kluss_blueprint_init(&s->blueprint);s->us=us;s->next_scope=1;s->snapshot_ply=-1;return s;
 }
-void m4_free(M4Search *s){if(s){kluss_blueprint_free(&s->blueprint);free(s->board);free(s);}}
+void m4_free(M4Search *s){if(s){kluss_blueprint_free(&s->blueprint);free(s->board);free(s->trace_alternates);free(s);}}
 void m4_set_evaluation(M4Search *s,M4SF *sf,int child_alternates){if(s){s->sf=sf;s->child_alternates=child_alternates!=0;}}
 void m4_set_tactical_closure(M4Search *s,int enabled){if(s)s->tactical_closure=enabled!=0;}
 int m4_observe(M4Search *s,const char view[65]) {
@@ -485,8 +488,14 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
                         uci,x[o+a],play[a],fatal_mass/total,action_value/total);
                 }
                 stats->current_mass=total;stats->active_mass=snapshot.active_mass;
+                free(s->trace_alternates);s->trace_alternates=NULL;s->trace_groups=0;
+                if(getenv("MIST_M4_TRACE_PATH")) {
+                    s->trace_alternates=malloc((size_t)gadget.groups*sizeof(double));
+                    if(s->trace_alternates){memcpy(s->trace_alternates,gadget.offset,(size_t)gadget.groups*sizeof(double));s->trace_groups=gadget.groups;}
+                }
                 kluss_blueprint_free(&s->blueprint);s->blueprint=snapshot;
                 free(s->board);s->board=t.board;t.board=NULL;t.capacity=0;stats->snapshot=1;
+                s->snapshot_ply=s->ply;
                 free(v);free(cf);free(op);
             }
             free(oh);free(th);
@@ -504,4 +513,62 @@ done:
     game_free(&raw);gadget_free(&gadget);gadget_solver_free(&solver);kluss_prepared_free(&prepared);
     stats->total_seconds=now()-start;stats->over_budget=stats->total_seconds>p->seconds;
     return ok;
+}
+
+static const char *trace_kind(const M4Search *s,int h) {
+    return s->blueprint.tree.nodes[h].type==NODE_PLAYER?"decision":s->board[h].live?"frontier":"terminal";
+}
+static void trace_node(const M4Search *s,FILE *out,int root,int h,const char *path,
+                       double probability,const double *v,const double *cf,const double *op) {
+    const KlussBlueprint *b=&s->blueprint;const GameNode *n=&b->tree.nodes[h];
+    const BoardNode *board=&s->board[h];char text[65];pos_to_board_string(&board->pos,text);
+    int losses=0,terminals=0,frontiers=0;
+    for(int a=0;a<n->count;++a) {
+        int c=b->tree.child[n->first+a];const GameNode *child=&b->tree.nodes[c];
+        if(child->type==NODE_TERMINAL) {
+            if(s->board[c].live)++frontiers;
+            else {++terminals;if(v[c]<=-1.0+1e-10)++losses;}
+        }
+    }
+    fprintf(out,"{\"kind\":\"node\",\"root\":%d,\"node\":%d,\"path\":\"%s\",\"board\":\"%s\",\"side\":%d,\"ep\":%d,\"castle\":\"%016llx\",\"halfmove\":%d,\"node_kind\":\"%s\",\"infoset\":%d,\"own_history\":\"%016llx\",\"raw\":%.17g,\"cf\":%.17g,\"opp\":%.17g,\"probability\":%.17g,\"actions\":%d,\"terminal_children\":%d,\"loss_children\":%d,\"frontier_children\":%d}\n",
+        root,h,path,text,board->pos.side,board->pos.ep,(unsigned long long)board->pos.castle_rooks,board->pos.halfmove,
+        trace_kind(s,h),n->type==NODE_PLAYER?n->infoset:-1,(unsigned long long)board->own,v[h],cf[h],op[h],probability,n->count,terminals,losses,frontiers);
+}
+int m4_trace_last(const M4Search *s,Move chosen,FILE *out,int max_records) {
+    if(!s||!out||max_records<1||!s->blueprint.valid||s->snapshot_ply!=s->ply)return 0;
+    const KlussBlueprint *b=&s->blueprint;const Game *g=&b->tree;int n=g->n_nodes;
+    double *v=malloc((size_t)n*sizeof(double)),*cf=malloc((size_t)n*sizeof(double)),*op=malloc((size_t)n*sizeof(double));
+    if(!v||!cf||!op||!kluss_blueprint_stats(b,v,cf,op)){free(v);free(cf);free(op);return 0;}
+    int records=0,complete=1,roots=0;char own[6];move_to_uci(chosen,own);
+    /* Blueprint boundaries are synthetic group-chance nodes, not boards.
+     * Locate current-ply board roots in their copied continuation forest. */
+    for(int h=0;h<n;++h) {
+        if(!s->board[h].valid||s->board[h].ply!=s->ply||s->board[h].own!=s->own||s->board[h].pos.side!=s->us)continue;
+        const GameNode *node=&g->nodes[h];MoveList legal;actions(&s->board[h],&legal);
+        if(node->type!=NODE_PLAYER||node->count!=legal.count){complete=0;break;}
+        int a=0;while(a<legal.count&&legal.moves[a]!=chosen)++a;
+        if(a==legal.count){complete=0;break;}
+        if(records>=max_records){complete=0;break;}
+        ++roots;++records;int group=s->board[h].group;
+        fprintf(out,"{\"kind\":\"root\",\"root\":%d,\"group\":%d,\"alternate\":",h,group);
+        if(group>=0&&group<s->trace_groups)fprintf(out,"%.17g",s->trace_alternates[group]);else fputs("null",out);
+        fprintf(out,",\"raw\":%.17g,\"cf\":%.17g,\"opp\":%.17g,\"own_probability\":%.17g}\n",v[h],cf[h],op[h],b->strategy[g->is_offset[node->infoset]+a]);
+        if(records>=max_records){complete=0;break;}
+        ++records;trace_node(s,out,h,h,"",1,v,cf,op);
+        int c=g->child[node->first+a];const GameNode *reply=&g->nodes[c];
+        if(records>=max_records){complete=0;break;}
+        ++records;trace_node(s,out,h,c,own,b->strategy[g->is_offset[node->infoset]+a],v,cf,op);
+        if(reply->type!=NODE_PLAYER)continue;
+        MoveList replies;actions(&s->board[c],&replies);
+        if(reply->count!=replies.count||s->board[c].pos.side==s->us){complete=0;break;}
+        for(int j=0;j<replies.count;++j) {
+            if(records>=max_records){complete=0;break;}
+            char uci[6],path[13];move_to_uci(replies.moves[j],uci);snprintf(path,sizeof(path),"%s/%s",own,uci);
+            ++records;trace_node(s,out,h,g->child[reply->first+j],path,b->strategy[g->is_offset[reply->infoset]+j],v,cf,op);
+        }
+        if(!complete)break;
+    }
+    if(!roots)complete=0;
+    fprintf(out,"{\"kind\":\"end\",\"complete\":%s,\"records\":%d,\"roots\":%d,\"ply\":%d}\n",complete?"true":"false",records,roots,s->ply);
+    int ok=complete&&!ferror(out);free(v);free(cf);free(op);return ok;
 }
