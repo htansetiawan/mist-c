@@ -17,6 +17,10 @@ int main(int argc,char **argv){
     setenv("M4SF_FAKE_MODE","startupchat",1);
     double start=m4sf_now();assert(!m4sf_open(argv[1],.06));
     assert(m4sf_now()-start<.3);
+    setenv("M4SF_FAKE_MODE","startupslow",1);
+    start=m4sf_now();assert(!m4sf_open(argv[1],.06));assert(m4sf_now()-start<.3);
+    M4SF *slow=m4sf_open(argv[1],5.0);assert(m4sf_ready(slow));
+    assert(m4sf_children(slow,&p,&m,m4sf_now()+.1,cp,found)==2);m4sf_close(slow);
     setenv("M4SF_FAKE_MODE","ok",1);M4SF *sf=m4sf_open(argv[1],.5);assert(m4sf_ready(sf));
     assert(m4sf_children(sf,&p,&m,m4sf_now()+.1,cp,found)==2);
     int matched=0;

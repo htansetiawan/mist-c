@@ -86,7 +86,7 @@ static int wait_word(M4SF *s,const char *word,double deadline){
 }
 M4SF *m4sf_open(const char *path,double seconds){
     if(!path||!path[0]||!isfinite(seconds)||seconds<=0)return NULL;
-    const double deadline=m4sf_now()+seconds;
+    const double started=m4sf_now(),deadline=started+seconds;
     M4SF *s=calloc(1,sizeof(*s));if(!s)return NULL;s->fd=-1;s->pid=-1;
     int pair[2];if(socketpair(AF_UNIX,SOCK_STREAM,0,pair)){free(s);return NULL;}
     if(fcntl(pair[0],F_SETFD,FD_CLOEXEC)<0||fcntl(pair[1],F_SETFD,FD_CLOEXEC)<0){close(pair[0]);close(pair[1]);free(s);return NULL;}
@@ -100,11 +100,18 @@ M4SF *m4sf_open(const char *path,double seconds){
     }
     close(pair[1]);s->fd=pair[0];
     int flags=fcntl(s->fd,F_GETFL,0);
-    if(flags<0||fcntl(s->fd,F_SETFL,flags|O_NONBLOCK)<0||
-       !send_all(s,"uci\n",deadline)||!wait_word(s,"uciok",deadline)||
-       !send_all(s,"setoption name Threads value 1\nsetoption name Hash value 16\nsetoption name MultiPV value 256\nisready\n",deadline)||
-       !wait_word(s,"readyok",deadline)){m4sf_close(s);return NULL;}
+    const char *phase="nonblocking setup";
+    if(flags<0||fcntl(s->fd,F_SETFL,flags|O_NONBLOCK)<0)goto failed;
+    phase="uci handshake";
+    if(!send_all(s,"uci\n",deadline)||!wait_word(s,"uciok",deadline))goto failed;
+    phase="ready handshake";
+    if(!send_all(s,"setoption name Threads value 1\nsetoption name Hash value 16\nsetoption name MultiPV value 256\nisready\n",deadline)||
+       !wait_word(s,"readyok",deadline))goto failed;
     s->ready=1;return s;
+failed:
+    fprintf(stderr,"m4sf: startup failed phase=%s elapsed=%.6f deadline_expired=%d\n",
+            phase,m4sf_now()-started,m4sf_now()>=deadline);
+    m4sf_close(s);return NULL;
 }
 static int supported(const Position *p){
     if(__builtin_popcountll(p->by_type[KING]&p->by_color[WHITE])!=1||

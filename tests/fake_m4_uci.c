@@ -10,6 +10,7 @@ int main(void){
     while(fgets(line,sizeof(line),stdin)){
         if(!strcmp(line,"uci\n")){
             if(!strcmp(mode,"startupchat"))for(;;){puts("id name incomplete startup");nap();}
+            if(!strcmp(mode,"startupslow")){struct timespec delay={1,100000000};nanosleep(&delay,NULL);}
             puts("uciok");
         }else if(!strcmp(line,"isready\n"))puts("readyok");
         else if(!strcmp(line,"go depth 1\n")){

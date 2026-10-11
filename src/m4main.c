@@ -119,7 +119,10 @@ int main(void) {
     M4Search *m4 = m4_create(us);
     if (!m4) return 2;
     M4SF *m4sf=NULL;
-    if(use_m4&&getenv("MIST_STOCKFISH")&&*getenv("MIST_STOCKFISH"))m4sf=m4sf_open(getenv("MIST_STOCKFISH"),1.0);
+    /* Startup is outside the move clock and has a 15s referee allowance.
+     * Loading Stockfish's embedded network can exceed 1s on a busy host.
+     * This separate bounded allowance does not extend search requests. */
+    if(use_m4&&getenv("MIST_STOCKFISH")&&*getenv("MIST_STOCKFISH"))m4sf=m4sf_open(getenv("MIST_STOCKFISH"),5.0);
     int child_alternates=m4sf!=NULL||(getenv("MIST_M4_ALT_CHILDREN")&&atoi(getenv("MIST_M4_ALT_CHILDREN"))!=0);
     m4_set_evaluation(m4,m4sf,child_alternates);
     double leaf_scale=1;const char *scale_env=getenv("MIST_M4_LEAF_SCALE");
