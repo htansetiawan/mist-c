@@ -69,15 +69,30 @@ test: test_m4
 .PHONY: test_m4
 
 # Experimental standalone M4 adapter; active build/mist stays unchanged.
-M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4search.c
-build/test_m4_chess: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h tests/test_m4_chess.c
+M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4search.c src/m4sf.c
+build/test_m4_chess: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h src/m4sf.h tests/test_m4_chess.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_chess.c -lm -o $@
-build/mist-m4: $(M4_CHESS) src/m4main.c $(M4_HDR) src/m4sample.h src/m4search.h
+build/mist-m4: $(M4_CHESS) src/m4main.c $(M4_HDR) src/m4sample.h src/m4search.h src/m4sf.h
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) src/m4main.c -lm -o $@
-build/test_m4_sample: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h tests/test_m4_sample.c
+build/test_m4_sample: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h src/m4sf.h tests/test_m4_sample.c
 	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_sample.c -lm -o $@
 test_m4_chess: build/test_m4_chess build/test_m4_sample
 	./build/test_m4_chess
 	./build/test_m4_sample
 .PHONY: test_m4_chess
 test_m4: test_m4_chess
+
+build/fake_m4_uci: tests/fake_m4_uci.c
+	mkdir -p build && $(CC) $(CFLAGS) $< -o $@
+build/test_m4_sf: $(SRC) src/m4sf.c src/m4sf.h tests/test_m4_sf.c
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) src/m4sf.c tests/test_m4_sf.c -lm -o $@
+test_m4_sf: build/fake_m4_uci build/test_m4_sf
+	./build/test_m4_sf ./build/fake_m4_uci
+.PHONY: test_m4_sf
+test_m4: test_m4_sf
+build/test_m4_eval: $(M4_CHESS) $(M4_HDR) src/m4search.h src/m4sf.h tests/test_m4_eval.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_eval.c -lm -o $@
+test_m4_eval: build/test_m4_eval
+	./build/test_m4_eval
+.PHONY: test_m4_eval
+test_m4: test_m4_eval

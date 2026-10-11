@@ -13,6 +13,7 @@ typedef struct {
     Position pos;
     uint64_t own, opponent, scope;
     int ply, live, valid, group;
+    double child_bound;
 } BoardNode;
 typedef struct {uint64_t key;int infoset,player;uint64_t actions;} InfoEntry;
 typedef struct {
@@ -24,6 +25,8 @@ typedef struct {
     int us,failed,conservative_leaves,max_nodes;
     double deadline;
     uint64_t rng;
+    M4SF *sf;
+    int sf_scored_moves;
 } ChessTree;
 struct M4Search {
     KlussBlueprint blueprint;
@@ -34,6 +37,8 @@ struct M4Search {
     char view[65];
     double reference;
     int reference_valid;
+    M4SF *sf;
+    int child_alternates;
 };
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static uint64_t random64(uint64_t *s) {
@@ -53,6 +58,7 @@ M4Search *m4_create(int us) {
     kluss_blueprint_init(&s->blueprint);s->us=us;s->next_scope=1;return s;
 }
 void m4_free(M4Search *s){if(s){kluss_blueprint_free(&s->blueprint);free(s->board);free(s);}}
+void m4_set_evaluation(M4Search *s,M4SF *sf,int child_alternates){if(s){s->sf=sf;s->child_alternates=child_alternates!=0;}}
 int m4_observe(M4Search *s,const char view[65]) {
     if(!s||!valid_view(view))return 0;
     if(!s->seen){s->own=history_mix(0,view_hash(view));s->seen=1;}
@@ -131,6 +137,13 @@ static int expand(ChessTree *t,int h) {
     int before=t->game->n_infosets,I=infoset(t,&parent,&l,-1);if(I<0)return 0;
     int kids[256],best=0;double best_value=-INFINITY;
     if(!reserve_boards(t,t->game->n_nodes+l.count))return 0;
+    int cp[256]={0},found[256]={0};
+    /* Do not start a request with only the tail of a decision left. A normal
+     * end-of-search should use cheap leaves, not kill a healthy engine with
+     * a 1-3ms deadline and lose it for every subsequent turn. */
+    double request_start=now();
+    if(m4sf_ready(t->sf)&&t->deadline-request_start>=.026)
+        t->sf_scored_moves+=m4sf_children(t->sf,&parent.pos,&l,request_start+.025,cp,found);
     for(int a=0;a<l.count;++a) {
         BoardNode child=parent;Undo undo;int mover=parent.pos.side;
         make_move(&child.pos,l.moves[a],&undo);child.ply++;
@@ -143,13 +156,14 @@ static int expand(ChessTree *t,int h) {
         else if(child.pos.halfmove>=100){child.live=0;value=0;}
         else {
             MoveList legal;generate_moves(&child.pos,&legal);child.live=legal.count>0;
-            value=child.live?evaluate(&child.pos,t->us):(mover==t->us?1:-1);
+            value=child.live?(found[a]?tanh(cp[a]/400.0)*(mover==t->us?1:-1):evaluate(&child.pos,t->us)):(mover==t->us?1:-1);
         }
         double score=mover==t->us?value:-value;if(score>best_value){best_value=score;best=a;}
         if(t->gadget)value=gadget_leaf_value(t->gadget,child.group,value);
         kids[a]=game_node(t->game,NODE_TERMINAL,0,-1,value);t->board[kids[a]]=child;
     }
     game_expand_leaf(t->game,h,parent.pos.side==t->us?0:1,I,kids,l.count);
+    t->board[h].child_bound=best_value*(parent.pos.side==t->us?1:-1);
     game_grow(t->game);
     if(I==before)t->game->last[t->game->is_offset[I]+best]=1; /* fresh best-child prediction */
     return 1;
@@ -269,7 +283,8 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
        ||p->max_nodes<256||p->seconds<=0||p->iterations_per_round<=0||p->expansions_per_round<0)return 0;
     stats->ply=s->ply;Game raw;game_init(&raw);Gadget gadget;memset(&gadget,0,sizeof(gadget));game_init(&gadget.game);
     KlussPrepared prepared;kluss_prepared_init(&prepared);GadgetSolver solver;gadget_solver_init(&solver);
-    ChessTree t={0};t.game=&raw;t.us=s->us;t.max_nodes=p->max_nodes;t.rng=p->seed;t.deadline=start+p->seconds*.75;
+    ChessTree t={0};t.game=&raw;t.us=s->us;t.max_nodes=p->max_nodes;t.rng=p->seed;t.deadline=start+p->seconds*.75;t.sf=s->sf;
+    M4SFStats sf_before;m4sf_stats(s->sf,&sf_before);
     GadgetRoot *roots=NULL;GadgetGroup *groups=NULL;Sample *sample=NULL;uint64_t *excluded=NULL;
     double *x=NULL;int nr=0,ng=0,ok=0,root_I=-1;MoveList legal;legal.count=0;
     /* Establish the actual root action ordering before expensive preparation. */
@@ -338,6 +353,11 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     for(int r=0;r<nr;++r)if(t.board[roots[r].node].own==s->own) {
         int h=roots[r].node;expand(&t,h);
         if(raw.nodes[h].type!=NODE_PLAYER)goto done;
+        if(s->child_alternates&&r>=carried){
+            double value=t.board[h].child_bound;
+            groups[roots[r].group].alternate=gadget_new_alternate(value,s->reference_valid?s->reference:value);
+            ++stats->child_alternates;
+        }
     }
     if(t.failed)goto done;
     game_grow(&raw);x=malloc((size_t)(raw.n_slots+1)*sizeof(double));if(!x)goto done;pcfr_current(&raw,x);
@@ -443,6 +463,9 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     stats->max_enter=solver.max_enter;stats->snapshot_seconds=now()-start-stats->setup_seconds-stats->solve_seconds;
     ok=1;
 done:
+    stats->sf_scored_moves=t.sf_scored_moves;
+    M4SFStats sf_after;m4sf_stats(s->sf,&sf_after);
+    stats->sf_calls=sf_after.calls-sf_before.calls;stats->sf_failed=sf_after.failed-sf_before.failed;stats->sf_seconds=sf_after.seconds-sf_before.seconds;
     free(roots);free(groups);free(sample);free(excluded);free(x);tree_free(&t);
     game_free(&raw);gadget_free(&gadget);gadget_solver_free(&solver);kluss_prepared_free(&prepared);
     stats->total_seconds=now()-start;stats->over_budget=stats->total_seconds>p->seconds;

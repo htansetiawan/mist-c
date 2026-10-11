@@ -6,6 +6,7 @@
 #ifndef MIST_M4SEARCH_H
 #define MIST_M4SEARCH_H
 #include "search.h"
+#include "m4sf.h"
 
 typedef struct M4Search M4Search;
 typedef struct {
@@ -24,10 +25,17 @@ typedef struct {
     double setup_seconds, solve_seconds, snapshot_seconds, total_seconds;
     double active_mass, max_enter, current_mass;
     int over_budget;
+    int child_alternates, sf_scored_moves;
+    long sf_calls, sf_failed;
+    double sf_seconds;
 } M4Stats;
 
 M4Search *m4_create(int us);
 void m4_free(M4Search *s);
+/* Borrow a separately owned optional evaluator. Child-backed fresh alternate
+ * values may also be tested with the internal evaluator (sf=NULL). Neither
+ * setting changes carried blueprint alternative values. */
+void m4_set_evaluation(M4Search *s,M4SF *sf,int child_alternates);
 int m4_observe(M4Search *s,const char view[65]);
 int m4_played(M4Search *s,Move actual);
 int m4_decide(M4Search *s,const Belief *belief,const M4Params *params,
