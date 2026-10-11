@@ -96,3 +96,13 @@ test_m4_eval: build/test_m4_eval
 	./build/test_m4_eval
 .PHONY: test_m4_eval
 test_m4: test_m4_eval
+
+# Offline information-conflict primitive; not linked into the frozen engine.
+build/test_m4_escape: src/board.c src/m4escape.c src/m4escape.h src/fow.h tests/test_m4_escape.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c src/m4escape.c tests/test_m4_escape.c -o $@
+build/escape_probe: src/board.c src/m4escape.c src/m4escape.h src/fow.h tools/escape_probe.c
+	mkdir -p build && $(CC) $(CFLAGS) src/board.c src/m4escape.c tools/escape_probe.c -o $@
+test_m4_escape: build/test_m4_escape
+	./build/test_m4_escape
+.PHONY: test_m4_escape
+test_m4: test_m4_escape
