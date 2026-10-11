@@ -1,6 +1,6 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
-SRC = src/board.c src/belief.c src/movemodel.c src/cfr.c src/eval.c src/search.c src/gtcfr.c src/front.c
+SRC = src/board.c src/belief.c src/movemodel.c src/cfr.c src/eval.c src/search.c src/gtcfr.c src/front.c src/sfeval.c
 
 build/test_rules: $(SRC) tests/test_rules.c src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_rules.c -lm -o $@
@@ -20,14 +20,18 @@ build/test_guard: $(SRC) tests/test_guard.c src/fow.h src/belief.h
 build/test_eval: $(SRC) tests/test_eval.c src/eval.h src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_eval.c -lm -o $@
 
+build/test_sf: $(SRC) tests/test_sf.c src/sfeval.h src/fow.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_sf.c -lm -o $@
+
 build/test_front: $(SRC) tests/test_front.c src/front.h src/belief.h src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_front.c -lm -o $@
 
-test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard build/test_front build/test_eval
+test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard build/test_front build/test_eval build/test_sf
 	./build/test_rules tests/vectors.txt
 	./build/test_guard tests/traces.txt
 	./build/test_front
 	./build/test_eval
+	./build/test_sf
 	./build/test_belief tests/traces.txt 100000
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25

@@ -27,6 +27,7 @@
 #include "front.h"
 #include "gtcfr.h"
 #include "search.h"
+#include "sfeval.h"
 
 static int is_view(const char *s) {
     if (strlen(s) != 64) return 0;
@@ -92,6 +93,9 @@ int main(void) {
     /* decision replay (tests): our first decisions play these moves (comma
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
+    /* MIST_STOCKFISH=path: Stockfish scores the search's leaves (paper, 3.3) */
+    if (getenv("MIST_STOCKFISH") && *getenv("MIST_STOCKFISH"))
+        fprintf(stderr, "mist: stockfish %s\n", sf_start(getenv("MIST_STOCKFISH")) ? "ready" : "failed to start; our evaluator scores the leaves");
     Belief b; belief_init_start(&b, us, cap);
     static Front front;
     front_init(&front, us);
@@ -208,9 +212,11 @@ int main(void) {
                 fprintf(stderr, "mist: risk %s %.4f%s\n", u, king_risk(&b, allowed.moves[i]), allowed.moves[i] == r.move ? " (chosen)" : "");
             }
         }
-        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f move=%s\n",
+        long sf_calls; double sf_seconds;
+        sf_stats(&sf_calls, &sf_seconds);
+        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f sf=%ld/%.1fs move=%s\n",
                 ++decisions, b.count, b.overflowed ? "(capped)" : "", r.samples, r.our_moves, r.opponent_infosets, r.nodes,
-                r.iterations, r.probability, r.value, lead, remaining, uci);
+                r.iterations, r.probability, r.value, lead, remaining, sf_calls, sf_seconds, uci);
         printf("move %s\n", uci); fflush(stdout);
         clock_left = reported - (now_seconds() - view_at) + increment;
         front_play(&front, view, r.move);
@@ -218,5 +224,6 @@ int main(void) {
         if (forced) break;   /* decision replay: one searched decision */
     }
     belief_free(&b);
+    sf_stop();
     return 0;
 }

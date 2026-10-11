@@ -9,6 +9,7 @@
 
 #include "cfr.h"
 #include "eval.h"
+#include "sfeval.h"
 
 typedef struct {
     int node;                    /* the Game node, currently an evaluated leaf */
@@ -100,6 +101,10 @@ static int build_children(Tree *t, const Position *p, const uint64_t hist[2], in
     MoveList l; generate_moves(p, &l);
     MoveList own;
     if (only) { own = l; l = *only; }
+    /* Stockfish scores every child in one call (paper, C.5); our evaluator
+     * covers a child it does not score and the case where it is off */
+    int sf_cp[256], sf_found[256];
+    const int sf = sf_ready() && sf_children(p, &l, sf_cp, sf_found) > 0;
     char view[65];
     for (int a = 0; a < l.count; ++a) {
         if (only && !has_move(&own, l.moves[a])) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, evaluate(p, us)); continue; }
@@ -111,7 +116,14 @@ static int build_children(Tree *t, const Position *p, const uint64_t hist[2], in
         uint64_t h[2];
         observation(&q, mover, view); h[me] = history_mix(history_mix(hist[me], l.moves[a]), view_hash(view));
         observation(&q, other, view); h[1 - me] = history_mix(hist[1 - me], view_hash(view));
-        kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, evaluate(&q, us));
+        double value;
+        if (sf && sf_found[a]) {
+            const double v = tanh(sf_cp[a] / 400.0);
+            value = mover == us ? v : -v;
+        } else {
+            value = evaluate(&q, us);
+        }
+        kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, value);
         remember_leaf(t, kids[a], &q, h);
     }
     return l.count;
@@ -223,9 +235,13 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     }
     game_children(&t.g, root, chance_kids, chance_p, K);
     game_finalize(&t.g);
-    /* expand every reply of the opponent once: the two-ply start */
-    for (int i = 0, n = t.n_leaves; i < n && t.g.n_nodes < params->max_nodes; ++i)
-        if (t.leaf_of[t.leaves[i].node] == i) expand(&t, i);
+    /* expand every reply of the opponent once: the two-ply start. Not with
+     * Stockfish: at a few milliseconds a call it would take K x |moves| calls;
+     * its depth-1 search already answers each move's captures, and the tree
+     * grows where the strategy goes */
+    if (!sf_ready())
+        for (int i = 0, n = t.n_leaves; i < n && t.g.n_nodes < params->max_nodes; ++i)
+            if (t.leaf_of[t.leaves[i].node] == i) expand(&t, i);
     game_grow(&t.g);
     ensure_visits(&t);
     double *x = malloc(sizeof(double) * (size_t)t.g.n_slots);
