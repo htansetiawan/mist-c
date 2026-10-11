@@ -52,3 +52,19 @@ Validation:
 
 Run: `make test_m4`, then `MIST_M4_CLOSURE=1 ./build/test_m4_chess`.
 Set `MIST_STOCKFISH` to test the separate bounded Stockfish evaluator too.
+
+## Development pilot outcome (2026-10-11)
+
+The paired 32-decision .5-second pilot rejected enabling this variant.
+Prevention survived 2/4 (White) and 0/4 (Black) with either schedule; control
+d01 regressed from 4/4 immediate survivals to 2/4, s18 stayed 2/4. Every run
+was valid, retained a snapshot and reported no overrun or evaluator failure.
+Enabled runs executed 287–1,535 priority expansions with no capacity drops.
+No broader gate or release is justified. Keep the default disabled.
+
+Receipts, all-legal independent-referee oracles and the predeclared screen:
+https://github.com/htansetiawan/iamavirus/tree/main/astra-submissions/analysis/m4-closure-20261011
+
+Counts do not prove that the particular refuting continuation was expanded.
+A targeted subtree audit should distinguish that from leaf valuation and
+gadget objective failures before any further change to this scheduler.
