@@ -67,3 +67,17 @@ test_m4: build/test_gadget build/test_kluss build/test_gadget_kuhn build/test_ga
 	./build/test_kluss_carry
 test: test_m4
 .PHONY: test_m4
+
+# Experimental standalone M4 adapter; active build/mist stays unchanged.
+M4_CHESS = $(SRC) src/gadget.c src/kluss.c src/m4sample.c src/m4search.c
+build/test_m4_chess: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h tests/test_m4_chess.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_chess.c -lm -o $@
+build/mist-m4: $(M4_CHESS) src/m4main.c $(M4_HDR) src/m4sample.h src/m4search.h
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) src/m4main.c -lm -o $@
+build/test_m4_sample: $(M4_CHESS) $(M4_HDR) src/m4sample.h src/m4search.h tests/test_m4_sample.c
+	mkdir -p build && $(CC) $(CFLAGS) $(M4_CHESS) tests/test_m4_sample.c -lm -o $@
+test_m4_chess: build/test_m4_chess build/test_m4_sample
+	./build/test_m4_chess
+	./build/test_m4_sample
+.PHONY: test_m4_chess
+test_m4: test_m4_chess
