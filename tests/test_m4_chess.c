@@ -43,19 +43,25 @@ static void chess_carry(int us) {
     m4_set_tactical_closure(s,getenv("MIST_M4_CLOSURE")!=NULL);
     int dominance=getenv("MIST_M4_DOMINANCE")!=NULL;
     assert(m4_set_root_dominance(s,dominance));
+    int fast_roots=getenv("MIST_M4_FAST_ROOTS")!=NULL;
+    assert(m4_set_fast_roots(s,fast_roots));
     M4Params params={12,30000,40,16,2,2.0,19,0};
-    int carried=0,off=0;
+    int carried=0,off=0,cheap_roots=0;
     for(int decision=0;decision<4;++decision) {
         if(p.side!=us) {
             assert(safe_opponent(&p));observation(&p,us,view);assert(m4_observe(s,view));assert(belief_after_opponent(&b,view)>0);
         }
         M4Stats st;SearchResult r;params.seed=19+decision;
-        assert(m4_decide(s,&b,&params,&r,&st));
+        int ok=m4_decide(s,&b,&params,&r,&st);
+        if(!ok)fprintf(stderr,"M4 test failure us=%d turn=%d carry=%d offI=%d fallback=%d cheap=%d sf_calls=%ld sf_failed=%ld total=%.6f setup=%.6f\n",us,decision,st.carried,st.off_current,st.fallback,st.cheap_carried_roots,st.sf_calls,st.sf_failed,st.total_seconds,st.setup_seconds);
+        assert(ok);
         MoveList l;generate_moves(&p,&l);int found=0;for(int a=0;a<l.count;++a)found|=l.moves[a]==r.move;assert(found);
         assert(st.snapshot);assert(r.iterations>0);assert(r.nodes<=params.max_nodes);
         assert(!st.over_budget);assert(st.purified_support>=1&&st.purified_support<=3);
         if(dominance)assert(st.dominance_complete&&!st.dominance_skipped);
         assert(m4_set_root_dominance(s,dominance));assert(!m4_set_root_dominance(s,!dominance));
+        assert(m4_set_fast_roots(s,fast_roots));assert(!m4_set_fast_roots(s,!fast_roots));
+        cheap_roots+=st.cheap_carried_roots;
         if(external)assert(m4sf_ready(external)&&st.sf_calls>0&&!st.sf_failed);
         char uci[6];move_to_uci(r.move,uci);
         printf("M4 chess us=%d turn=%d move=%s carried=%d off-I=%d fresh=%d nodes=%d iters=%d %.4fs fallback=%d sf_calls=%ld\n",us,decision,uci,st.carried,st.off_current,st.fresh,r.nodes,r.iterations,st.total_seconds,st.fallback,st.sf_calls);
@@ -64,6 +70,7 @@ static void chess_carry(int us) {
         observation(&p,us,view);assert(m4_observe(s,view));assert(belief_after_own(&b,r.move,view)>0);
     }
     assert(carried>0);if(us==WHITE)assert(off>0);
+    if(fast_roots)assert(cheap_roots>0);else assert(cheap_roots==0);
     m4_free(s);belief_free(&b);
 }
 static void fifty_move_draw(void) {

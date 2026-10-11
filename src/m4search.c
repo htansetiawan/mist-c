@@ -47,6 +47,7 @@ struct M4Search {
     int snapshot_ply;
     double leaf_scale;
     int root_dominance;
+    int fast_roots;
     double *trace_alternates;
     int trace_groups;
 };
@@ -77,6 +78,10 @@ int m4_set_leaf_scale(M4Search *s,double scale) {
 int m4_set_root_dominance(M4Search *s,int enabled) {
     if(!s||(enabled!=0&&enabled!=1)||(s->blueprint.valid&&enabled!=s->root_dominance))return 0;
     s->root_dominance=enabled;return 1;
+}
+int m4_set_fast_roots(M4Search *s,int enabled) {
+    if(!s||(enabled!=0&&enabled!=1)||(s->blueprint.valid&&enabled!=s->fast_roots))return 0;
+    s->fast_roots=enabled;return 1;
 }
 int m4_observe(M4Search *s,const char view[65]) {
     if(!s||!valid_view(view))return 0;
@@ -225,7 +230,19 @@ static int index_compare(const void *a,const void *b){const Sample *x=a,*y=b;ret
 
 /* Retain the complete same-ply frontier, not just nodes consistent with us.
  * kluss_prepare then retains the opponent-connected off-I branches. */
-static int carry(M4Search *s,ChessTree *t,KlussPrepared *p,M4Stats *stats) {
+static int carry_fits(const M4Search *s,const KlussPrepared *p,int max_nodes,int root_actions,int fresh_target) {
+    /* Admit a whole knowledge closure only if all current frontier leaves can
+     * receive a complete action row. Reserve an upper bound for fresh roots
+     * and their gadget wrappers too. Never truncate the closure or fail only
+     * after constructing a prefix of its action rows. */
+    long long needed=p->gadget.game.n_nodes+(long long)fresh_target*(root_actions+4)+2;
+    for(int r=0;r<p->root_count&&needed<=max_nodes;++r) {
+        int old=p->roots[r].node,h=p->gadget.node_map[old];
+        if(s->blueprint.ours[old]==s->own&&p->gadget.game.nodes[h].type==NODE_TERMINAL)needed+=root_actions;
+    }
+    return needed<=max_nodes;
+}
+static int carry(M4Search *s,ChessTree *t,KlussPrepared *p,M4Stats *stats,int root_actions,int fresh_target) {
     KlussBlueprint *b=&s->blueprint;if(!b->valid){stats->fallback=1;return 0;}
     int n=b->tree.n_nodes;
     KlussFrontier *f=malloc((size_t)n*sizeof(*f));
@@ -241,7 +258,7 @@ static int carry(M4Search *s,ChessTree *t,KlussPrepared *p,M4Stats *stats) {
     if(!stats->current_found)stats->fallback=1;
     else if(!stats->current_positive)stats->fallback=2;
     else if(!ok||!kluss_prepare(b,f,count,s->own,p))stats->fallback=3;
-    else if(p->gadget.game.n_nodes>t->max_nodes){stats->fallback=4;kluss_prepared_free(p);}
+    else if(!carry_fits(s,p,t->max_nodes,root_actions,fresh_target)){stats->fallback=4;kluss_prepared_free(p);}
     else {
         *t->game=p->gadget.game;game_init(&p->gadget.game); /* transfer ownership */
         if(reserve_boards(t,t->game->n_nodes)) {
@@ -320,7 +337,7 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     BoardNode initial={0};initial.pos=b->items[0];actions(&initial,&legal);
     if(!legal.count)goto done;
     out->move=legal.moves[0];out->our_moves=legal.count;out->probability=1;
-    int have=carry(s,&t,&prepared,stats);if(t.failed)goto done;
+    int have=carry(s,&t,&prepared,stats,legal.count,p->samples);if(t.failed)goto done;
     int carried=have?prepared.root_count:0;
     int old_aux=have?3*prepared.group_count+2:0;
     roots=malloc((size_t)(carried+p->samples)*sizeof(*roots));groups=malloc((size_t)(prepared.group_count+p->samples)*sizeof(*groups));
@@ -380,7 +397,16 @@ int m4_decide(M4Search *s,const Belief *b,const M4Params *p,SearchResult *out,M4
     /* Every current-I root needs the same action set, including carried leaves.
      * Rebuilding a source tree does not change its raw terminal scores. */
     for(int r=0;r<nr;++r)if(t.board[roots[r].node].own==s->own) {
-        int h=roots[r].node;expand(&t,h);
+        int h=roots[r].node;M4SF *evaluator=t.sf;
+        if(s->fast_roots&&r<carried&&raw.nodes[h].type==NODE_TERMINAL) {
+            /* Thousands of carried frontier roots all require an action row.
+             * A blocking external depth-1 call per root can exhaust the whole
+             * setup budget before a single solver iteration. Initialize all
+             * these rows cheaply; normal tree expansion still uses Stockfish.
+             * Fresh-world child alternates keep their original evaluator. */
+            t.sf=NULL;++stats->cheap_carried_roots;
+        }
+        expand(&t,h);t.sf=evaluator;
         if(raw.nodes[h].type!=NODE_PLAYER)goto done;
         if(s->child_alternates&&r>=carried){
             double value=t.board[h].child_bound;

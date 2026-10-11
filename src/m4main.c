@@ -133,6 +133,8 @@ int main(void) {
     m4_set_tactical_closure(m4,closure);
     const int dominance=getenv("MIST_M4_DOMINANCE")&&atoi(getenv("MIST_M4_DOMINANCE"))!=0;
     m4_set_root_dominance(m4,dominance);
+    const int fast_roots=getenv("MIST_M4_FAST_ROOTS")&&atoi(getenv("MIST_M4_FAST_ROOTS"))!=0;
+    m4_set_fast_roots(m4,fast_roots);
     if (use_m4) fprintf(stderr, "mist-m4: evaluator=%s child_alternates=%d kappa=1, fresh-world singleton knowledge; replay=%s\n", m4sf?"bounded-stockfish":"internal",child_alternates,replay_warm ? "searched-prefix" : "cold-prefix");
     Belief b; belief_init_start(&b, us, cap);
     static Front front;
@@ -245,6 +247,7 @@ int main(void) {
         if(use_m4)fprintf(stderr,"m4-eval: child_alternates=%d ready=%d scored=%d calls=%ld failed=%ld seconds=%.6f scale=%.6f\n",ms.child_alternates,m4sf_ready(m4sf),ms.sf_scored_moves,ms.sf_calls,ms.sf_failed,ms.sf_seconds,leaf_scale);
         if(use_m4&&closure)fprintf(stderr,"m4-closure: ply=%d prefix=0 scheduled=%d expanded=%d dropped=%d\n",ms.ply,ms.closure_scheduled,ms.closure_expanded,ms.closure_dropped);
         if(use_m4&&dominance)fprintf(stderr,"m4-dominance: ply=%d complete=%d redirected=%d changed=%d skipped=%d\n",ms.ply,ms.dominance_complete,ms.dominance_redirected,ms.dominance_changed,ms.dominance_skipped);
+        if(use_m4&&fast_roots)fprintf(stderr,"m4-setup: ply=%d cheap_carried_roots=%d\n",ms.ply,ms.cheap_carried_roots);
         if(use_m4&&mp.tactical_witnesses)fprintf(stderr,"m4-witness: scanned=%d complete=%d added=%d candidate_moves=%d\n",ms.witness_scanned,ms.witness_complete,ms.witness_added,ms.witness_candidate_moves);
         if (!ok) {
             /* last resort: decide on the position we can see */
