@@ -255,11 +255,23 @@ int gadget_seed_blueprint(Gadget *g,const Game *s,const double *x) {
 }
 
 int gadget_blueprint_stats(const Game *g,const double *x,double *value,double *cf,double *opp) {
-    if(!g || !x || !value || !cf || !opp || g->root<0 || g->root>=g->n_nodes)return 0;
+    if(!g)return 0;
+    GadgetBoundary root={g->root,1,1};
+    return gadget_forest_stats(g,x,&root,1,value,cf,opp);
+}
+int gadget_forest_stats(const Game *g,const double *x,const GadgetBoundary *roots,int nr,
+                        double *value,double *cf,double *opp) {
+    if(!g || !x || !value || !cf || !opp || !roots || nr<=0 || nr>g->n_nodes)return 0;
     int *order=malloc((size_t)g->n_nodes*sizeof(int)); unsigned char *seen=calloc((size_t)g->n_nodes,1);
     if(!order || !seen){free(order);free(seen);return 0;}
     memset(value,0,(size_t)g->n_nodes*sizeof(double));memset(cf,0,(size_t)g->n_nodes*sizeof(double));memset(opp,0,(size_t)g->n_nodes*sizeof(double));
-    int count=1,ok=0;order[0]=g->root;seen[g->root]=1;cf[g->root]=opp[g->root]=1;
+    int count=0,ok=0;
+    for(int i=0;i<nr;++i) {
+        int h=roots[i].node;
+        if(h<0||h>=g->n_nodes||seen[h]||!isfinite(roots[i].cf_reach)||roots[i].cf_reach<0
+           ||!isfinite(roots[i].opponent_reach)||roots[i].opponent_reach<0)goto done;
+        order[count++]=h;seen[h]=1;cf[h]=roots[i].cf_reach;opp[h]=roots[i].opponent_reach;
+    }
     for(int i=0;i<count;++i) {
         int v=order[i];if(!valid_node(g,v))goto done;const GameNode *n=&g->nodes[v];
         const double *p=n->type==NODE_CHANCE?g->prob+n->first:n->type==NODE_PLAYER?x+g->is_offset[n->infoset]:NULL;
@@ -269,6 +281,7 @@ int gadget_blueprint_stats(const Game *g,const double *x,double *value,double *c
             seen[c]=1;order[count++]=c;
             cf[c]=cf[v]*(n->type==NODE_PLAYER&&n->player==1?1:p[a]);
             opp[c]=opp[v]*(n->type==NODE_PLAYER&&n->player==1?p[a]:1);
+            if(!isfinite(cf[c])||!isfinite(opp[c]))goto done;
         }
     }
     for(int i=count-1;i>=0;--i) {
@@ -276,6 +289,7 @@ int gadget_blueprint_stats(const Game *g,const double *x,double *value,double *c
         if(n->type==NODE_TERMINAL){value[v]=n->value;continue;}
         const double *p=n->type==NODE_CHANCE?g->prob+n->first:x+g->is_offset[n->infoset];
         for(int a=0;a<n->count;++a)value[v]+=p[a]*value[g->child[n->first+a]];
+        if(!isfinite(value[v]))goto done;
     }
     ok=1;
 done:free(order);free(seen);return ok;

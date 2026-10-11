@@ -28,25 +28,51 @@ int kluss_select(const KlussFrontier *f,int n,uint64_t current,unsigned char *ke
     free(keys);return count;
 }
 void kluss_blueprint_init(KlussBlueprint *b){memset(b,0,sizeof(*b));game_init(&b->tree);}
-void kluss_blueprint_free(KlussBlueprint *b){game_free(&b->tree);free(b->strategy);free(b->ours);free(b->theirs);kluss_blueprint_init(b);}
+void kluss_blueprint_free(KlussBlueprint *b){game_free(&b->tree);free(b->strategy);free(b->ours);free(b->theirs);free(b->boundary);kluss_blueprint_init(b);}
 
-int kluss_blueprint_capture(KlussBlueprint *b,const Game *g,const double *x,
-                            const uint64_t *ours,const uint64_t *theirs) {
-    if(!b || !g || !x || !ours || !theirs || g->n_nodes<=0 || g->n_infosets<0)return 0;
+static int capture_forest(KlussBlueprint *b,const Game *g,const double *x,
+                           const uint64_t *ours,const uint64_t *theirs,
+                           const GadgetBoundary *roots,int nr,const double *offset) {
+    if(!b || !g || !x || !ours || !theirs || !roots || nr<=0 || nr>g->n_nodes || g->n_infosets<0)return 0;
     double *value=malloc((size_t)g->n_nodes*sizeof(double));
     double *cf=malloc((size_t)g->n_nodes*sizeof(double)),*opp=malloc((size_t)g->n_nodes*sizeof(double));
     if(!value||!cf||!opp){free(value);free(cf);free(opp);return 0;}
-    int valid=gadget_blueprint_stats(g,x,value,cf,opp);
-    double expected=valid?value[g->root]:0;free(value);free(cf);free(opp);
+    int valid=gadget_forest_stats(g,x,roots,nr,value,cf,opp);
+    double mass=0,expected=0;
+    if(valid)for(int j=0;j<nr;++j) {
+        double w=roots[j].cf_reach*roots[j].opponent_reach;
+        mass+=w;expected+=w*(value[roots[j].node]+(offset?offset[j]:0));
+    }
+    free(value);free(cf);free(opp);
+    valid=valid&&mass>0&&isfinite(mass)&&isfinite(expected);
     if(!valid)return 0;
     KlussBlueprint fresh;kluss_blueprint_init(&fresh);
     fresh.strategy=malloc((size_t)(g->n_slots+1)*sizeof(double));
     fresh.ours=malloc((size_t)g->n_nodes*sizeof(uint64_t));fresh.theirs=malloc((size_t)g->n_nodes*sizeof(uint64_t));
-    if(!fresh.strategy||!fresh.ours||!fresh.theirs){kluss_blueprint_free(&fresh);return 0;}
+    fresh.boundary=malloc((size_t)nr*sizeof(GadgetBoundary));fresh.boundary_count=nr;
+    int *queue=offset?malloc((size_t)g->n_nodes*sizeof(int)):NULL;
+    double *restore=offset?calloc((size_t)g->n_nodes,sizeof(double)):NULL;
+    if(!fresh.strategy||!fresh.ours||!fresh.theirs||!fresh.boundary||(offset&&(!queue||!restore))) {
+        free(queue);free(restore);kluss_blueprint_free(&fresh);return 0;
+    }
+    if(offset) {
+        /* The validated forest is disjoint, including nodes appended by
+         * later expansions. Do not rely on the original source-node map. */
+        int count=0;
+        for(int j=0;j<nr;++j){queue[count++]=roots[j].node;restore[roots[j].node]=offset[j];}
+        for(int k=0;k<count;++k) {
+            int h=queue[k];const GameNode *n=&g->nodes[h];
+            for(int a=0;a<n->count;++a){int c=g->child[n->first+a];restore[c]=restore[h];queue[count++]=c;}
+        }
+    }
     for(int i=0;i<g->n_infosets;++i)game_infoset(&fresh.tree,g->is_player[i],g->is_actions[i]);
     for(int i=0;i<g->n_nodes;++i) {
-        const GameNode *n=&g->nodes[i];game_node(&fresh.tree,n->type,n->player,n->infoset,n->value);
+        const GameNode *n=&g->nodes[i];
+        double raw=n->value+(restore&&n->type==NODE_TERMINAL?restore[i]:0);
+        if(!isfinite(raw)){free(queue);free(restore);kluss_blueprint_free(&fresh);return 0;}
+        game_node(&fresh.tree,n->type,n->player,n->infoset,raw);
     }
+    free(queue);free(restore);
     for(int i=0;i<g->n_nodes;++i) {
         const GameNode *n=&g->nodes[i];
         if(n->count)game_children(&fresh.tree,i,g->child+n->first,g->prob+n->first,n->count);
@@ -54,8 +80,28 @@ int kluss_blueprint_capture(KlussBlueprint *b,const Game *g,const double *x,
     fresh.tree.root=g->root;game_finalize(&fresh.tree);
     memcpy(fresh.strategy,x,(size_t)g->n_slots*sizeof(double));
     memcpy(fresh.ours,ours,(size_t)g->n_nodes*sizeof(uint64_t));memcpy(fresh.theirs,theirs,(size_t)g->n_nodes*sizeof(uint64_t));
-    fresh.expected_value=expected;fresh.valid=1;
+    memcpy(fresh.boundary,roots,(size_t)nr*sizeof(GadgetBoundary));
+    fresh.expected_value=expected/mass;fresh.active_mass=mass;fresh.valid=1;
     kluss_blueprint_free(b);*b=fresh;return 1;
+}
+int kluss_blueprint_capture(KlussBlueprint *b,const Game *g,const double *x,
+                            const uint64_t *ours,const uint64_t *theirs) {
+    if(!g)return 0;
+    GadgetBoundary root={g->root,1,1};return capture_forest(b,g,x,ours,theirs,&root,1,NULL);
+}
+int kluss_blueprint_capture_gadget(KlussBlueprint *b,const Gadget *g,const double *x,
+                                   const uint64_t *ours,const uint64_t *theirs) {
+    if(!g||g->groups<=0||!x)return 0;
+    double *weights=malloc((size_t)g->groups*sizeof(double));
+    GadgetBoundary *roots=malloc((size_t)g->groups*sizeof(GadgetBoundary));int ok=0;
+    if(!weights||!roots)goto done;
+    if(!isfinite(gadget_root_weights(g,x,weights)))goto done;
+    for(int j=0;j<g->groups;++j)roots[j]=(GadgetBoundary){g->group_chance[j],1,weights[j]};
+    ok=capture_forest(b,&g->game,x,ours,theirs,roots,g->groups,g->offset);
+done:free(weights);free(roots);return ok;
+}
+int kluss_blueprint_stats(const KlussBlueprint *b,double *value,double *cf,double *opp) {
+    return b&&b->valid&&gadget_forest_stats(&b->tree,b->strategy,b->boundary,b->boundary_count,value,cf,opp);
 }
 
 void kluss_prepared_init(KlussPrepared *p){memset(p,0,sizeof(*p));game_init(&p->gadget.game);}
@@ -74,8 +120,8 @@ static int compare_frontier(const void *aa,const void *bb) {
  * First aggregate CF action values at INFORMATION SETS (not individual
  * boards), then accumulate the positive P0-value increments down each path.
  * blueprint_stats has already validated the reachable tree. */
-static int blueprint_gifts(const Game *g,const double *x,const double *value,
-                           const double *cf,double *gift) {
+static int blueprint_gifts(const KlussBlueprint *b,const double *value,const double *cf,double *gift) {
+    const Game *g=&b->tree;const double *x=b->strategy;
     double *iv=calloc((size_t)(g->n_infosets+1),sizeof(double));
     double *av=calloc((size_t)(g->n_slots+1),sizeof(double));
     int *queue=malloc((size_t)g->n_nodes*sizeof(int));
@@ -91,7 +137,8 @@ static int blueprint_gifts(const Game *g,const double *x,const double *value,
         for(int a=0;a<g->is_actions[I];++a)iv[I]+=x[o+a]*av[o+a];
     }
     memset(gift,0,(size_t)g->n_nodes*sizeof(double));
-    queue[0]=g->root;int count=1,ok=1;
+    int count=0,ok=1;
+    for(int j=0;j<b->boundary_count;++j)queue[count++]=b->boundary[j].node;
     for(int k=0;k<count&&ok;++k) {
         int h=queue[k];const GameNode *n=&g->nodes[h];
         for(int a=0;a<n->count;++a) {
@@ -121,7 +168,7 @@ int kluss_prepare(const KlussBlueprint *b,const KlussFrontier *f,int n,
         if(h<0||h>=g->n_nodes||b->ours[h]!=f[i].ours||b->theirs[h]!=f[i].theirs)goto done;
     }
     kept=kluss_select(f,n,current,keep,dist);if(kept<=0)goto done;
-    if(!gadget_blueprint_stats(g,b->strategy,value,cf,opp)||!blueprint_gifts(g,b->strategy,value,cf,gift))goto done;
+    if(!kluss_blueprint_stats(b,value,cf,opp)||!blueprint_gifts(b,value,cf,gift))goto done;
     int k=0;
     for(int i=0;i<n;++i)if(keep[i])keys[k++]=(FrontierKey){f[i].theirs,i};
     qsort(keys,(size_t)kept,sizeof(FrontierKey),compare_frontier);

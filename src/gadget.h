@@ -77,10 +77,20 @@ double gadget_new_alternate(double leaf, double previous_value);
 
 /* Evaluate a fixed blueprint on a tree. Arrays have source->n_nodes entries.
  * Outputs: expected continuation values, chance*P0 reach, P1-only reach.
- * Unreachable nodes get value 0 and reach 0. No best-response assumption.
+ * Structurally unreachable nodes get value 0 and reach 0. Zero-probability
+ * opponent branches are still evaluated counterfactually. No BR assumption.
  * Use the group helper to normalize the counterfactual reach exactly once. */
 int gadget_blueprint_stats(const Game *source, const double *strategy,
                            double *value, double *cf_reach, double *opp_reach);
+/* A carried adaptive game is a forest below the artificial gadget layers.
+ * Preserve the actual opponent root reach without turning it into chance or
+ * normalizing it. Each boundary is a disjoint subtree root; nodes outside
+ * these subtrees have zero reach/value. Zero opponent reach retains CF support.
+ */
+typedef struct { int node; double cf_reach, opponent_reach; } GadgetBoundary;
+int gadget_forest_stats(const Game *source, const double *strategy,
+                        const GadgetBoundary *boundary, int count,
+                        double *value, double *cf_reach, double *opp_reach);
 int gadget_group_blueprint(const GadgetRoot *roots, int n_roots, int group,
                            const double *value, const double *opp_reach,
                            double *alternate, double *opponent_reach);

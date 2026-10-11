@@ -25,7 +25,10 @@ typedef struct {
     Game tree;                  /* immutable structural copy, raw P0 utilities */
     double *strategy;           /* behavior snapshot, independent of solver state */
     uint64_t *ours, *theirs;    /* history identities by node, supplied by caller */
-    double expected_value;
+    GadgetBoundary *boundary; /* owned forest roots, actual CF/opponent reaches */
+    int boundary_count;
+    double expected_value;    /* raw continuation mean, conditional on entry */
+    double active_mass;       /* may be <1 after an adaptive gadget; not normalized */
     int valid;
 } KlussBlueprint;
 void kluss_blueprint_init(KlussBlueprint *b);
@@ -36,6 +39,18 @@ void kluss_blueprint_free(KlussBlueprint *b);
  * Board/leaf payload ownership remains with the frontend integration. */
 int kluss_blueprint_capture(KlussBlueprint *b,const Game *g,const double *x,
                             const uint64_t *ours,const uint64_t *theirs);
+/* Capture an adaptive solve directly. Strips the artificial root layers from
+ * reach/gift traversal; restores each continuation's raw leaf values once.
+ * x must be current behavior, not the average. Histories use gadget node IDs.
+ * tree.root alone is NOT this forest's root: use blueprint_stats below.
+ * The stored expected_value is conditional on entering a continuation; exits
+ * are solving devices, not played chess outcomes. Preserve active_mass in CFR.
+ * The adapter may need an additional conditioning on its current own infoset
+ * for the reference value of newly sampled worlds (I can be smaller than I²).
+ */
+int kluss_blueprint_capture_gadget(KlussBlueprint *b,const Gadget *g,const double *x,
+                                   const uint64_t *ours,const uint64_t *theirs);
+int kluss_blueprint_stats(const KlussBlueprint *b,double *value,double *cf,double *opp);
 
 /* Prepare the carried portion of a new subgame. The adapter supplies an
  * antichain of histories at the new decision time; no board matching occurs
