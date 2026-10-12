@@ -63,6 +63,45 @@ static double king_risk(const Belief *b, Move m) {
     return total > 0 ? lost / total : 0;
 }
 
+/* Expected material `m` loses on the next ply, in pawns, over at most `cap`
+ * boards of P evenly strided (weights kept): the opponent's best immediate
+ * capture (the piece taken less the capturer where we can take it back)
+ * less what `m` itself takes on that board. King captures are the king
+ * guard's business and count 0 here. Of 283 decisive bad moves in
+ * our v25-v33 losses, 273 lost material to a piece the search's 32 sampled
+ * worlds did not hold often enough; all of P sees it more often. */
+static const int piece_pawns[6] = {1, 3, 3, 5, 9, 0};
+static double material_risk(const Belief *b, Move m, size_t cap) {
+    const size_t stride = b->count > cap ? (b->count + cap - 1) / cap : 1;
+    double total = 0, lost = 0;
+    for (size_t i = 0; i < b->count; i += stride) {
+        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        Position p = b->items[i];
+        int got = p.piece[MOVE_TO(m)] != NO_PIECE && p.color[MOVE_TO(m)] != p.side ? piece_pawns[p.piece[MOVE_TO(m)]] : 0;
+        if (!got && p.piece[MOVE_FROM(m)] == PAWN && MOVE_TO(m) == p.ep) got = 1;
+        Undo u;
+        make_move(&p, m, &u);
+        total += w;
+        if (mover_left_king_capturable(&p)) continue;
+        const int us = p.side ^ 1;
+        MoveList l; generate_moves(&p, &l);
+        int best = 0;
+        for (int j = 0; j < l.count; ++j) {
+            const int to = MOVE_TO(l.moves[j]), from = MOVE_FROM(l.moves[j]);
+            int taken = p.piece[to] != NO_PIECE && p.color[to] == us ? p.piece[to] : NO_PIECE;
+            if (taken == NO_PIECE && p.piece[from] == PAWN && to == p.ep) taken = PAWN;
+            if (taken == NO_PIECE || taken == KING) continue;
+            int gain = piece_pawns[taken];
+            if (gain <= best) continue;
+            Position q = p; Undo v; make_move(&q, l.moves[j], &v);
+            if (is_attacked(&q, to, us)) gain -= piece_pawns[p.piece[from]];
+            if (gain > best) best = gain;
+        }
+        lost += w * (best - got);   /* the net of the exchange this board sees */
+    }
+    return total > 0 ? lost / total : 0;
+}
+
 /* king_risk on at most `cap` boards of P, evenly strided (weights kept) */
 static double king_risk_capped(const Belief *b, Move m, size_t cap) {
     if (b->count <= cap) return king_risk(b, m);
@@ -85,10 +124,15 @@ static double now_seconds(void) {
     return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
 }
 
-/* about remaining/30 + 80% of the increment, capped at max_seconds and at 30%
- * of what is left */
+/* (remaining - reserve) / divisor + 80% of the increment, capped at max_seconds
+ * and at 30% of what is left. The arena games are decided early: of 283
+ * decisive bad moves in our v25-v33 losses, half came by our 10th decision and
+ * 90% by the 18th, while remaining/30 left a median 77 s unused at the end.
+ * MIST_DIVISOR and MIST_RESERVE set the shape (defaults 30 and 0 = v9). */
+static double budget_divisor = 30.0, budget_reserve = 0.0;
 static double move_budget(double remaining, double increment, double max_seconds) {
-    double budget = remaining / 30.0 + 0.8 * increment;
+    double budget = (remaining - budget_reserve) / budget_divisor + 0.8 * increment;
+    if (budget < 0.3) budget = 0.3;
     if (budget > max_seconds) budget = max_seconds;
     if (budget > remaining * 0.3) budget = remaining * 0.3;
     return budget;
@@ -103,11 +147,17 @@ int main(void) {
     fow_init(); zobrist_init();
     const size_t cap = getenv("MIST_CAP") ? (size_t)strtoull(getenv("MIST_CAP"), NULL, 10) : 200000;
     const double max_seconds = getenv("MIST_MAX_SECONDS") ? atof(getenv("MIST_MAX_SECONDS")) : 10.0;
+    if (getenv("MIST_DIVISOR")) budget_divisor = atof(getenv("MIST_DIVISOR"));
+    if (getenv("MIST_RESERVE")) budget_reserve = atof(getenv("MIST_RESERVE"));
     const int repeat_lead = getenv("MIST_REPEAT_LEAD") ? atoi(getenv("MIST_REPEAT_LEAD")) : 2;
     /* a root move that leaves our king capturable counts kappa losses (gtcfr.h) */
     const double kappa = getenv("MIST_KING_RISK") ? atof(getenv("MIST_KING_RISK")) : 2.0;
     /* MIST_KING_GUARD: leave out moves this far above the safest king risk (negative: off) */
     const double guard = getenv("MIST_KING_GUARD") ? atof(getenv("MIST_KING_GUARD")) : 0.02;
+    /* MIST_MATERIAL_GUARD: leave out moves whose expected one-ply material
+     * loss on P exceeds the least by this many pawns (negative: off) */
+    const double mguard = getenv("MIST_MATERIAL_GUARD") ? atof(getenv("MIST_MATERIAL_GUARD")) : -1.0;
+    const size_t mcap = getenv("MIST_MATERIAL_CAP") ? (size_t)strtoull(getenv("MIST_MATERIAL_CAP"), NULL, 10) : 5000;
     /* decision replay (tests): our first decisions play these moves (comma
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
@@ -190,16 +240,26 @@ int main(void) {
          * or more moves had none. Leave out the moves more than `guard`
          * above the safest one, measured on all of P (or 20,000 boards) */
         Move guarded[512];
+        double mrisk[256], mleast = 1e9;
+        int have_mrisk = 0;
+        if ((mguard >= 0 || getenv("MIST_RISK") || getenv("MIST_MATERIAL_DIAG")) && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
+            for (int i = 0; i < allowed.count; ++i) { mrisk[i] = material_risk(&b, allowed.moves[i], mcap); if (mrisk[i] < mleast) mleast = mrisk[i]; }
+            have_mrisk = 1;
+        }
         if (guard >= 0 && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
             double risk[256], least = 1;
             for (int i = 0; i < allowed.count; ++i) { risk[i] = king_risk_capped(&b, allowed.moves[i], 20000); if (risk[i] < least) least = risk[i]; }
             int n = gp.avoid_count;
             for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
-            int dropped = 0;
-            for (int i = 0; i < allowed.count; ++i) if (risk[i] > least + guard) { guarded[n++] = allowed.moves[i]; ++dropped; }
-            if (dropped > 0 && dropped < allowed.count) {
+            int dropped = 0, mdropped = 0;
+            for (int i = 0; i < allowed.count; ++i) {
+                if (risk[i] > least + guard) { guarded[n++] = allowed.moves[i]; ++dropped; }
+                else if (mguard >= 0 && have_mrisk && mrisk[i] > mleast + mguard) { guarded[n++] = allowed.moves[i]; ++mdropped; }
+            }
+            if (dropped + mdropped > 0 && dropped + mdropped < allowed.count) {
                 gp.avoid = guarded; gp.avoid_count = n;
-                fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f)\n", dropped, allowed.count, least);
+                if (dropped > 0) fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f)\n", dropped, allowed.count, least);
+                if (mdropped > 0) fprintf(stderr, "mist: material guard left out %d of %d moves (least %.2f)\n", mdropped, allowed.count, mleast);
             }
         }
         SearchResult r; int ok = 0;
@@ -248,17 +308,19 @@ int main(void) {
         }
         if (!ok) { fprintf(stderr, "mist: no legal move\n"); break; }
         char uci[6]; move_to_uci(r.move, uci);
-        if (getenv("MIST_RISK")) {   /* diagnostics: each allowed move's risk on P */
+        double chosen_mrisk = -1;
+        if (have_mrisk) for (int i = 0; i < allowed.count; ++i) if (allowed.moves[i] == r.move) chosen_mrisk = mrisk[i];
+        if (getenv("MIST_RISK")) {   /* diagnostics: each allowed move's king and material risk on P */
             for (int i = 0; i < allowed.count; ++i) {
                 char u[6]; move_to_uci(allowed.moves[i], u);
-                fprintf(stderr, "mist: risk %s %.4f%s\n", u, king_risk(&b, allowed.moves[i]), allowed.moves[i] == r.move ? " (chosen)" : "");
+                fprintf(stderr, "mist: risk %s %.4f mrisk %.2f%s\n", u, king_risk(&b, allowed.moves[i]), have_mrisk ? mrisk[i] : -1.0, allowed.moves[i] == r.move ? " (chosen)" : "");
             }
         }
         long sf_calls; double sf_seconds;
         sf_stats(&sf_calls, &sf_seconds);
-        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f sf=%ld/%.1fs move=%s\n",
+        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f sf=%ld/%.1fs mr=%.2f/%.2f move=%s\n",
                 ++decisions, b.count, b.overflowed ? "(capped)" : "", r.samples, r.our_moves, r.opponent_infosets, r.nodes,
-                r.iterations, r.probability, r.value, lead, remaining, sf_calls, sf_seconds, uci);
+                r.iterations, r.probability, r.value, lead, remaining, sf_calls, sf_seconds, chosen_mrisk, have_mrisk ? mleast : -1.0, uci);
         printf("move %s\n", uci); fflush(stdout);
         clock_left = reported - (now_seconds() - view_at) + increment;
         front_play(&front, view, r.move);
