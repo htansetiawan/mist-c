@@ -19,6 +19,14 @@ int sf_ready(void);
  * castling through an attacked square. Returns how many were scored (0 on
  * failure). */
 int sf_children(const Position *p, const MoveList *l, int *cp, int *found);
+/* The same in two halves over several worker processes (MIST_SF_WORKERS):
+ * sf_submit sends `p` to `worker` (1 if it is now in flight; 0 when the
+ * position is not supported, the worker is busy or Stockfish is off) and
+ * sf_collect waits for that worker's answer and scores `l` as sf_children
+ * does. sf_workers() is how many workers can take a request (0 = off). */
+int sf_workers(void);
+int sf_submit(int worker, const Position *p);
+int sf_collect(int worker, const MoveList *l, int *cp, int *found);
 /* Calls made and their total wall time, for the decision log. */
 void sf_stats(long *calls, double *seconds);
 void sf_stop(void);

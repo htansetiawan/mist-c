@@ -31,6 +31,8 @@ typedef struct {
     unsigned long long rng;
 } Tree;
 
+#define MAX_WORKERS_BATCH 64   /* picks per round at most; sf workers are at most 8 */
+
 static double seconds_since(const struct timespec *t0) {
     struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
     return (t1.tv_sec - t0->tv_sec) + 1e-9 * (t1.tv_nsec - t0->tv_nsec);
@@ -96,16 +98,15 @@ static int has_move(const MoveList *l, Move m) {
  * `only` (the root) fixes the moves and their order; a move it lists that is
  * not legal in `p` (an en passant that only some boards allow) keeps `p`'s
  * evaluation. Returns the number of moves (0 = no legal move). */
-static int build_children(Tree *t, const Position *p, const uint64_t hist[2], int *kids, const MoveList *only) {
+/* `sf`, `sf_cp`, `sf_found`: Stockfish's scores of the mover's moves, fetched
+ * by the caller (sf_submit/sf_collect over the workers); sf = 0 means none. */
+static int build_children_scored(Tree *t, const Position *p, const uint64_t hist[2], int *kids, const MoveList *only,
+                                 int sf, const int *sf_cp, const int *sf_found) {
     const int mover = p->side, other = mover ^ 1, us = t->us;
     const int me = mover == us ? 0 : 1;   /* index into hist for the mover */
     MoveList l; generate_moves(p, &l);
     MoveList own;
     if (only) { own = l; l = *only; }
-    /* Stockfish scores every child in one call (paper, C.5); our evaluator
-     * covers a child it does not score and the case where it is off */
-    int sf_cp[256], sf_found[256];
-    const int sf = sf_ready() && sf_children(p, &l, sf_cp, sf_found) > 0;
     char view[65];
     for (int a = 0; a < l.count; ++a) {
         if (only && !has_move(&own, l.moves[a])) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, evaluate(p, us)); continue; }
@@ -130,11 +131,21 @@ static int build_children(Tree *t, const Position *p, const uint64_t hist[2], in
     return l.count;
 }
 
+/* Stockfish scores every child in one call (paper, C.5); our evaluator
+ * covers a child it does not score and the case where it is off */
+static int build_children(Tree *t, const Position *p, const uint64_t hist[2], int *kids, const MoveList *only) {
+    int sf_cp[256], sf_found[256];
+    MoveList l; generate_moves(p, &l);
+    if (only) l = *only;
+    const int sf = sf_ready() && sf_children(p, &l, sf_cp, sf_found) > 0;
+    return build_children_scored(t, p, hist, kids, only, sf, sf_cp, sf_found);
+}
+
 /* Turns leaf `index` into a decision node of its side to move. */
-static int expand(Tree *t, int index) {
+static int expand_scored(Tree *t, int index, int sf, const int *sf_cp, const int *sf_found) {
     Leaf leaf = t->leaves[index];
     int kids[256];
-    const int count = build_children(t, &leaf.pos, leaf.hist, kids, NULL);
+    const int count = build_children_scored(t, &leaf.pos, leaf.hist, kids, NULL, sf, sf_cp, sf_found);
     if (count == 0) return 0;
     const int player = leaf.pos.side == t->us ? 0 : 1;
     const int before = t->g.n_infosets;
@@ -156,6 +167,36 @@ static int expand(Tree *t, int index) {
     return 1;
 }
 
+static int expand(Tree *t, int index) {
+    int sf_cp[256], sf_found[256];
+    MoveList l; generate_moves(&t->leaves[index].pos, &l);
+    const int sf = sf_ready() && sf_children(&t->leaves[index].pos, &l, sf_cp, sf_found) > 0;
+    return expand_scored(t, index, sf, sf_cp, sf_found);
+}
+
+/* Expands leaves `picked[0..n)`: their positions go to the Stockfish workers
+ * in waves of sf_workers() (one request in flight per worker), so N workers
+ * score N leaves in the time of one. Without Stockfish, one by one. */
+static int expand_batch(Tree *t, const int *picked, int n) {
+    int grown = 0;
+    const int W = sf_workers();
+    if (W <= 0) {
+        for (int i = 0; i < n; ++i) grown += expand(t, picked[i]);
+        return grown;
+    }
+    for (int i = 0; i < n; i += W) {
+        int sent[MAX_WORKERS_BATCH];
+        for (int j = 0; j < W && i + j < n; ++j) sent[j] = sf_submit(j, &t->leaves[picked[i + j]].pos);
+        for (int j = 0; j < W && i + j < n; ++j) {
+            int sf_cp[256], sf_found[256];
+            MoveList l; generate_moves(&t->leaves[picked[i + j]].pos, &l);
+            const int sf = sent[j] && sf_collect(j, &l, sf_cp, sf_found) > 0;
+            grown += expand_scored(t, picked[i + j], sf, sf_cp, sf_found);
+        }
+    }
+    return grown;
+}
+
 static void ensure_visits(Tree *t) {
     if (t->g.n_slots <= t->cap_visits) return;
     const int old = t->cap_visits;
@@ -164,16 +205,19 @@ static void ensure_visits(Tree *t) {
     memset(t->visits + old, 0, (t->cap_visits - old) * sizeof(int));
 }
 
-/* One expansion: walk down from the root and expand the frontier leaf reached. */
+/* One selection: walk down from the root to the frontier leaf reached and
+ * return its index (-1: none), taking it off the frontier so that this
+ * round's later walks cannot pick it again. */
 /* `x_slots` is how many slots `x` covers: information sets created by this
  * round's earlier expansions lie beyond it and act as this round's frontier. */
-static int expand_once(Tree *t, int explorer, const double *x, int x_slots) {
+static int pick_once(Tree *t, int explorer, const double *x, int x_slots) {
     int node = t->g.root;
     for (int depth = 0; depth < 64; ++depth) {
         const GameNode *n = &t->g.nodes[node];
         if (n->type == NODE_TERMINAL) {
             const int li = node < t->cap_leaf_of ? t->leaf_of[node] : -1;
-            return li >= 0 ? expand(t, li) : 0;
+            if (li >= 0) t->leaf_of[node] = -1;
+            return li;
         }
         int pick = 0;
         if (n->type == NODE_CHANCE) {
@@ -181,7 +225,7 @@ static int expand_once(Tree *t, int explorer, const double *x, int x_slots) {
             for (int i = 0; i < n->count; ++i) { acc += t->g.prob[n->first + i]; if (r <= acc) { pick = i; break; } }
         } else {
             const int o = t->g.is_offset[n->infoset];
-            if (o + n->count > x_slots || o + n->count > t->cap_visits) return 0;
+            if (o + n->count > x_slots || o + n->count > t->cap_visits) return -1;
             if (n->player == explorer) {
                 if (next_random(&t->rng) & 1) {
                     /* uniform over the support of the current strategy */
@@ -206,7 +250,7 @@ static int expand_once(Tree *t, int explorer, const double *x, int x_slots) {
         }
         node = t->g.child[n->first + pick];
     }
-    return 0;
+    return -1;
 }
 
 int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) {
@@ -267,10 +311,13 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
         x = realloc(x, sizeof(double) * (size_t)t.g.n_slots);
         pcfr_current(&t.g, x);
         const int x_slots = t.g.n_slots;
-        for (int e = 0; e < params->expansions_per_round && t.g.n_nodes < params->max_nodes; ++e) {
-            grown += expand_once(&t, explorer, x, x_slots);
+        int picked[MAX_WORKERS_BATCH], np = 0;
+        for (int e = 0; e < params->expansions_per_round && np < MAX_WORKERS_BATCH && t.g.n_nodes < params->max_nodes; ++e) {
+            const int li = pick_once(&t, explorer, x, x_slots);
+            if (li >= 0) picked[np++] = li;
             explorer ^= 1;
         }
+        grown += expand_batch(&t, picked, np);
         game_grow(&t.g);
         ensure_visits(&t);
     }

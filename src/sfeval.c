@@ -1,6 +1,6 @@
 #undef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L  /* fork, pipe, poll, kill, clock_gettime under -std=c11 */
-/* mist-c: Stockfish over UCI. See sfeval.h. */
+/* mist-c: Stockfish over UCI, on one or more worker processes. See sfeval.h. */
 #include "sfeval.h"
 
 #include <errno.h>
@@ -14,11 +14,21 @@
 #include <time.h>
 #include <unistd.h>
 
-static int to_fd = -1, from_fd = -1, alive = 0, restarts = 0;
+#define MAX_WORKERS 8
+
+/* One Stockfish process with its pipes and a read buffer; at most one request
+ * in flight (UCI wants the GUI to wait for bestmove before the next go). */
+typedef struct {
+    int to_fd, from_fd, alive, pending;
+    pid_t child;
+    char buf[1 << 16];
+    size_t have, start;
+    double started;
+} Worker;
+
+static Worker workers[MAX_WORKERS];
+static int n_workers = 0, restarts = 0;
 static char engine_path[512] = "";
-static pid_t child = -1;
-static char buf[1 << 16];
-static size_t have = 0, start = 0;
 static long calls = 0;
 static double spent = 0;
 
@@ -28,103 +38,121 @@ static double now(void) {
     return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
 }
 
-void sf_stop(void) {
-    if (child > 0) {
-        if (alive && to_fd >= 0) { const char q[] = "quit\n"; ssize_t w = write(to_fd, q, sizeof q - 1); (void)w; }
-        kill(child, SIGKILL);
-        waitpid(child, NULL, 0);
+static void stop_worker(Worker *w) {
+    if (w->child > 0) {
+        if (w->alive && w->to_fd >= 0) { const char q[] = "quit\n"; ssize_t r = write(w->to_fd, q, sizeof q - 1); (void)r; }
+        kill(w->child, SIGKILL);
+        waitpid(w->child, NULL, 0);
     }
-    if (to_fd >= 0) close(to_fd);
-    if (from_fd >= 0) close(from_fd);
-    to_fd = from_fd = -1; child = -1; alive = 0; have = start = 0;
+    if (w->to_fd >= 0) close(w->to_fd);
+    if (w->from_fd >= 0) close(w->from_fd);
+    w->to_fd = w->from_fd = -1; w->child = -1; w->alive = 0; w->pending = 0; w->have = w->start = 0;
 }
 
-static int send_line(const char *s) {
+void sf_stop(void) {
+    for (int i = 0; i < n_workers; ++i) stop_worker(&workers[i]);
+    n_workers = 0;
+}
+
+static int send_line(Worker *w, const char *s) {
     size_t n = strlen(s), off = 0;
     while (off < n) {
-        const ssize_t w = write(to_fd, s + off, n - off);
-        if (w < 0) { if (errno == EINTR) continue; return 0; }
-        off += (size_t)w;
+        const ssize_t r = write(w->to_fd, s + off, n - off);
+        if (r < 0) { if (errno == EINTR) continue; return 0; }
+        off += (size_t)r;
     }
     return 1;
 }
 
 /* Next line (without the newline) into `out`; 0 on timeout or end of stream. */
-static int read_line(char *out, size_t cap, int timeout_ms) {
+static int read_line(Worker *w, char *out, size_t cap, int timeout_ms) {
     const double deadline = now() + timeout_ms / 1000.0;
     for (;;) {
-        for (size_t i = start; i < have; ++i) {
-            if (buf[i] == '\n') {
-                size_t n = i - start < cap - 1 ? i - start : cap - 1;
-                memcpy(out, buf + start, n); out[n] = '\0';
-                start = i + 1;
+        for (size_t i = w->start; i < w->have; ++i) {
+            if (w->buf[i] == '\n') {
+                size_t n = i - w->start < cap - 1 ? i - w->start : cap - 1;
+                memcpy(out, w->buf + w->start, n); out[n] = '\0';
+                w->start = i + 1;
                 return 1;
             }
         }
-        if (start > 0) { memmove(buf, buf + start, have - start); have -= start; start = 0; }
-        if (have == sizeof buf) have = 0;   /* an absurd line: drop it */
+        if (w->start > 0) { memmove(w->buf, w->buf + w->start, w->have - w->start); w->have -= w->start; w->start = 0; }
+        if (w->have == sizeof w->buf) w->have = 0;   /* an absurd line: drop it */
         const int left = (int)((deadline - now()) * 1000);
         if (left <= 0) return 0;
-        struct pollfd pfd = {from_fd, POLLIN, 0};
+        struct pollfd pfd = {w->from_fd, POLLIN, 0};
         const int r = poll(&pfd, 1, left);
         if (r <= 0) { if (r < 0 && errno == EINTR) continue; return 0; }
-        const ssize_t got = read(from_fd, buf + have, sizeof buf - have);
+        const ssize_t got = read(w->from_fd, w->buf + w->have, sizeof w->buf - w->have);
         if (got <= 0) { if (got < 0 && errno == EINTR) continue; return 0; }
-        have += (size_t)got;
+        w->have += (size_t)got;
     }
 }
 
-static int wait_for(const char *prefix, int timeout_ms) {
+static int wait_for(Worker *w, const char *prefix, int timeout_ms) {
     char line[4096];
     const double deadline = now() + timeout_ms / 1000.0;
     for (;;) {
         const int left = (int)((deadline - now()) * 1000);
-        if (left <= 0 || !read_line(line, sizeof line, left)) return 0;
+        if (left <= 0 || !read_line(w, line, sizeof line, left)) return 0;
         if (strncmp(line, prefix, strlen(prefix)) == 0) return 1;
     }
 }
 
-static int launch(const char *path);
-
-int sf_start(const char *path) {
-    snprintf(engine_path, sizeof engine_path, "%s", path);
-    restarts = 0;
-    return launch(path);
-}
-
-/* After a failure: start the engine again, at most three times a game. */
-static int relaunch(void) {
-    sf_stop();
-    if (!engine_path[0] || restarts >= 3) return 0;
-    ++restarts;
-    return launch(engine_path);
-}
-
-static int launch(const char *path) {
+static int launch(Worker *w, const char *path) {
     int in[2], out[2];
     signal(SIGPIPE, SIG_IGN);   /* a dead engine must not kill us */
+    memset(w, 0, sizeof *w);
+    w->to_fd = w->from_fd = -1; w->child = -1;
     if (pipe(in) != 0) return 0;
     if (pipe(out) != 0) { close(in[0]); close(in[1]); return 0; }
-    child = fork();
-    if (child < 0) { close(in[0]); close(in[1]); close(out[0]); close(out[1]); return 0; }
-    if (child == 0) {
+    w->child = fork();
+    if (w->child < 0) { close(in[0]); close(in[1]); close(out[0]); close(out[1]); w->child = -1; return 0; }
+    if (w->child == 0) {
         dup2(in[0], 0); dup2(out[1], 1);
         close(in[0]); close(in[1]); close(out[0]); close(out[1]);
         execl(path, path, (char *)NULL);
         _exit(127);
     }
     close(in[0]); close(out[1]);
-    to_fd = in[1]; from_fd = out[0]; alive = 1;
-    if (!send_line("uci\n") || !wait_for("uciok", 5000) ||
-        !send_line("setoption name Threads value 1\nsetoption name Hash value 16\nsetoption name MultiPV value 256\nisready\n") ||
-        !wait_for("readyok", 5000)) {
-        sf_stop();
+    w->to_fd = in[1]; w->from_fd = out[0]; w->alive = 1;
+    if (!send_line(w, "uci\n") || !wait_for(w, "uciok", 5000) ||
+        !send_line(w, "setoption name Threads value 1\nsetoption name Hash value 16\nsetoption name MultiPV value 256\nisready\n") ||
+        !wait_for(w, "readyok", 5000)) {
+        stop_worker(w);
         return 0;
     }
     return 1;
 }
 
-int sf_ready(void) { return alive; }
+/* MIST_SF_WORKERS processes (default 2: the arena gives two cores and the
+ * search blocks on every call); all must start or none runs. */
+int sf_start(const char *path) {
+    snprintf(engine_path, sizeof engine_path, "%s", path);
+    restarts = 0;
+    sf_stop();
+    int want = getenv("MIST_SF_WORKERS") ? atoi(getenv("MIST_SF_WORKERS")) : 2;
+    if (want < 1) want = 1;
+    if (want > MAX_WORKERS) want = MAX_WORKERS;
+    for (int i = 0; i < want; ++i) {
+        if (!launch(&workers[i], path)) { n_workers = i; sf_stop(); return 0; }
+    }
+    n_workers = want;
+    return 1;
+}
+
+/* After a failure of one worker: start it again, at most three times a game;
+ * otherwise Stockfish is off for the rest of the game. */
+static int relaunch(Worker *w) {
+    stop_worker(w);
+    if (!engine_path[0] || restarts >= 3) { sf_stop(); return 0; }
+    ++restarts;
+    if (!launch(w, engine_path)) { sf_stop(); return 0; }
+    return 1;
+}
+
+int sf_ready(void) { return n_workers > 0 && workers[0].alive; }
+int sf_workers(void) { return sf_ready() ? n_workers : 0; }
 
 void sf_stats(long *c, double *s) { *c = calls; *s = spent; }
 
@@ -168,20 +196,32 @@ static int supported(const Position *p) {
     return !is_attacked(p, king_square(p, p->side ^ 1), p->side);
 }
 
-int sf_children(const Position *p, const MoveList *l, int *cp, int *found) {
-    if (!alive || !supported(p)) return 0;
-    const double t0 = now();
-    char uci[256][6];
-    for (int i = 0; i < l->count; ++i) { move_to_uci(l->moves[i], uci[i]); found[i] = 0; cp[i] = 0; }
+
+int sf_submit(int worker, const Position *p) {
+    if (!sf_ready() || worker < 0 || worker >= n_workers || !supported(p)) return 0;
+    Worker *w = &workers[worker];
+    if (w->pending) return 0;
     char fen[100], cmd[160];
     sf_fen(p, fen);
     snprintf(cmd, sizeof cmd, "position fen %s\ngo depth 1\n", fen);
-    if (!send_line(cmd)) { relaunch(); return 0; }
+    w->started = now();
+    if (!send_line(w, cmd)) { relaunch(w); return 0; }
+    w->pending = 1;
+    return 1;
+}
+
+int sf_collect(int worker, const MoveList *l, int *cp, int *found) {
+    char uci[256][6];
+    for (int i = 0; i < l->count; ++i) { move_to_uci(l->moves[i], uci[i]); found[i] = 0; cp[i] = 0; }
+    if (!sf_ready() || worker < 0 || worker >= n_workers) return 0;
+    Worker *w = &workers[worker];
+    if (!w->pending) return 0;
+    w->pending = 0;
     int scored = 0;
     char line[4096];
     for (;;) {
-        if (!read_line(line, sizeof line, 2000)) { relaunch(); return 0; }
-        if (strstr(line, "CRITICAL ERROR")) { relaunch(); return 0; }
+        if (!read_line(w, line, sizeof line, 2000)) { relaunch(w); return 0; }
+        if (strstr(line, "CRITICAL ERROR")) { relaunch(w); return 0; }
         if (strncmp(line, "bestmove", 8) == 0) break;
         if (strncmp(line, "info", 4) != 0 || !strstr(line, " multipv ")) continue;
         if (strstr(line, "lowerbound") || strstr(line, "upperbound")) continue;
@@ -203,6 +243,14 @@ int sf_children(const Position *p, const MoveList *l, int *cp, int *found) {
             }
         }
     }
-    ++calls; spent += now() - t0;
+    ++calls; spent += now() - w->started;
     return scored;
+}
+
+int sf_children(const Position *p, const MoveList *l, int *cp, int *found) {
+    if (!sf_submit(0, p)) {
+        for (int i = 0; i < l->count; ++i) { found[i] = 0; cp[i] = 0; }
+        return 0;
+    }
+    return sf_collect(0, l, cp, found);
 }
