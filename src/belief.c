@@ -7,6 +7,9 @@
 #include <string.h>
 
 #include "movemodel.h"
+#include <pthread.h>
+
+#define MAX_THREADS 8
 
 static uint64_t z_piece[2][6][64], z_side, z_castle[64], z_ep[64];
 
@@ -161,6 +164,9 @@ static size_t commit(Belief *b, Vec *next) {
  * 10000), the cheap one above; MIST_PRUNE_CAPTURABLE=0 keeps positions the
  * referee's rule excludes. */
 static int settings_read = 0, model_on = 1, prune_capturable = 1;
+/* MIST_THREADS: threads over P for the updates (default 2: the arena's cores);
+ * below 4000 positions the update stays on one */
+static int threads_setting = 2;
 static float model_temp = 1.0f;
 static size_t model_full_below = 10000;
 
@@ -220,7 +226,12 @@ static void read_settings(void) {
     if ((e = getenv("MIST_HISTORY_TABLE")) && *e) read_history_table(e);
     if ((e = getenv("MIST_HISTORY_N0"))) hist_n0 = (float)atof(e);
     if ((e = getenv("MIST_HISTORY_MIN"))) hist_min = (unsigned)atoi(e);
+    if ((e = getenv("MIST_THREADS"))) threads_setting = atoi(e);
+    if (threads_setting < 1) threads_setting = 1;
+    if (threads_setting > MAX_THREADS) threads_setting = MAX_THREADS;
 }
+
+static int threads_for(size_t count) { return count >= 4000 ? threads_setting : 1; }
 
 /* What a view pins down, as bitboards: necessary conditions checked before the
  * full visibility comparison. */
@@ -272,33 +283,39 @@ static float log_add(float a, float b) {
     return a + log1pf(expf(b - a));
 }
 
-size_t belief_after_opponent(Belief *b, const char view[65]) {
-    read_settings();
-    ViewMasks vm;
-    view_masks(view, b->us, &vm);
-    Candidate *cand = NULL;
-    size_t n = 0, cap_cand = 0;
+/* Pass 1 of the opponent update over the parents [lo, hi): every consistent
+ * successor, its key and log-weight. One per thread; the tables it reads are
+ * fixed for the game and everything it writes is its own. */
+typedef struct {
+    const Belief *b; const ViewMasks *vm; const char *view;
+    size_t lo, hi;
+    int full;
+    Candidate *cand; size_t n, cap;
+    unsigned long lookups, hits;
+} OppPass1;
+
+static void *opp_pass1(void *arg) {
+    OppPass1 *w = arg;
+    const Belief *b = w->b;
     char seen[65];
-    const int full = b->count <= model_full_below;
     float logit[256];
-    /* pass 1: every consistent successor, its key and log-weight */
-    for (size_t i = 0; i < b->count; ++i) {
+    for (size_t i = w->lo; i < w->hi; ++i) {
         Position p = b->items[i];
         MoveList l;
         generate_moves(&p, &l);
         float log_z = 0;
         unsigned hc[256], N = 0;
         if (model_on) {
-            move_logits(&p, &l, b->last_own, full, logit);
+            move_logits(&p, &l, b->last_own, w->full, logit);
             float top = -INFINITY;
             for (int j = 0; j < l.count; ++j) if (logit[j] > top) top = logit[j];
             double z = 0;
             for (int j = 0; j < l.count; ++j) z += exp((double)(logit[j] - top));
             log_z = top + (float)log(z);
             if (hist_table) {
-                ++hist_lookups;
+                ++w->lookups;
                 N = history_counts(b->hist ? b->hist[i] : 0, &l, hc);
-                if (N < hist_min) N = 0; else ++hist_hits;
+                if (N < hist_min) N = 0; else ++w->hits;
             }
         }
         const float base = b->logw ? b->logw[i] : 0.0f;
@@ -306,21 +323,76 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
             Undo u;
             make_move(&p, l.moves[j], &u);
             /* the referee ends the game on a move that leaves the mover's king capturable */
-            if (may_match(&p, &vm, b->us) && !(prune_capturable && mover_left_king_capturable(&p))) {
+            if (may_match(&p, w->vm, b->us) && !(prune_capturable && mover_left_king_capturable(&p))) {
                 observation(&p, b->us, seen);
-                if (memcmp(seen, view, 64) == 0) {
-                    if (n == cap_cand) { cap_cand = cap_cand ? 2 * cap_cand : 1 << 14; cand = realloc(cand, cap_cand * sizeof(Candidate)); }
-                    cand[n].key = position_key(&p);
-                    cand[n].parent = (uint32_t)i;
-                    cand[n].move = l.moves[j];
-                    cand[n].logw = base + (!model_on ? 0.0f : N > 0
+                if (memcmp(seen, w->view, 64) == 0) {
+                    if (w->n == w->cap) { w->cap = w->cap ? 2 * w->cap : 1 << 14; w->cand = realloc(w->cand, w->cap * sizeof(Candidate)); }
+                    Candidate *c = &w->cand[w->n++];
+                    c->key = position_key(&p);
+                    c->parent = (uint32_t)i;
+                    c->move = l.moves[j];
+                    c->logw = base + (!model_on ? 0.0f : N > 0
                         ? model_temp * logf(((float)hc[j] + hist_n0 * expf(logit[j] - log_z)) / ((float)N + hist_n0))
                         : model_temp * (logit[j] - log_z));
-                    ++n;
                 }
             }
             unmake_move(&p, l.moves[j], &u);
         }
+    }
+    return NULL;
+}
+
+/* Pass 2 over the kept candidates [lo, hi): the positions with their
+ * histories, written straight into the next P at their index. */
+typedef struct {
+    const Belief *b; const Candidate *cand; const uint32_t *chosen;
+    size_t lo, hi;
+    Vec *next;
+} OppPass2;
+
+static void *opp_pass2(void *arg) {
+    OppPass2 *w = arg;
+    const Belief *b = w->b;
+    char theirs[65];
+    for (size_t k = w->lo; k < w->hi; ++k) {
+        const Candidate *c = &w->cand[w->chosen[k]];
+        Position p = b->items[c->parent];
+        Undo u;
+        make_move(&p, c->move, &u);
+        /* the opponent knows its own move and sees its view after it */
+        observation(&p, b->us ^ 1, theirs);
+        w->next->items[k] = p;
+        w->next->hist[k] = history_mix(history_mix(b->hist ? b->hist[c->parent] : 0, c->move), view_hash(theirs));
+        w->next->logw[k] = c->logw;
+    }
+    return NULL;
+}
+
+size_t belief_after_opponent(Belief *b, const char view[65]) {
+    read_settings();
+    ViewMasks vm;
+    view_masks(view, b->us, &vm);
+    const int full = b->count <= model_full_below;
+    const int T = threads_for(b->count);
+    OppPass1 w1[MAX_THREADS];
+    pthread_t tid[MAX_THREADS];
+    for (int t = 0; t < T; ++t) {
+        memset(&w1[t], 0, sizeof w1[t]);
+        w1[t].b = b; w1[t].vm = &vm; w1[t].view = view; w1[t].full = full;
+        w1[t].lo = b->count * (size_t)t / (size_t)T; w1[t].hi = b->count * (size_t)(t + 1) / (size_t)T;
+    }
+    int started = 1;
+    for (int t = 1; t < T; ++t) { if (pthread_create(&tid[t], NULL, opp_pass1, &w1[t]) != 0) { w1[0].hi = w1[t].hi; break; } started = t + 1; }
+    if (started < T) for (int t = started; t < T; ++t) w1[t].hi = w1[t].lo;   /* their parents fell to thread 0 */
+    opp_pass1(&w1[0]);
+    for (int t = 1; t < started; ++t) pthread_join(tid[t], NULL);
+    size_t n = 0;
+    for (int t = 0; t < T; ++t) { n += w1[t].n; hist_lookups += w1[t].lookups; hist_hits += w1[t].hits; }
+    Candidate *cand = w1[0].cand;
+    if (T > 1) {
+        cand = realloc(cand, (n ? n : 1) * sizeof(Candidate));
+        size_t at = w1[0].n;
+        for (int t = 1; t < T; ++t) { memcpy(cand + at, w1[t].cand, w1[t].n * sizeof(Candidate)); at += w1[t].n; free(w1[t].cand); }
     }
     /* positions reached by several histories: weights add; the heaviest
      * history represents the position (search keys the opponent by it) */
@@ -354,44 +426,92 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
     }
     /* pass 2: rebuild the kept positions with their histories */
     Vec next = {0};
-    char theirs[65];
-    for (size_t k = 0; k < keep; ++k) {
-        const Candidate *c = &cand[chosen[k]];
-        Position p = b->items[c->parent];
-        Undo u;
-        make_move(&p, c->move, &u);
-        /* the opponent knows its own move and sees its view after it */
-        observation(&p, b->us ^ 1, theirs);
-        const uint64_t h = history_mix(history_mix(b->hist ? b->hist[c->parent] : 0, c->move), view_hash(theirs));
-        vec_push(&next, &p, h, c->logw);
+    next.capacity = keep ? keep : 1;
+    next.items = malloc(next.capacity * sizeof(Position));
+    next.hist = malloc(next.capacity * sizeof(uint64_t));
+    next.logw = malloc(next.capacity * sizeof(float));
+    next.count = keep;
+    const int T2 = threads_for(keep);
+    OppPass2 w2[MAX_THREADS];
+    for (int t = 0; t < T2; ++t) {
+        w2[t].b = b; w2[t].cand = cand; w2[t].chosen = chosen; w2[t].next = &next;
+        w2[t].lo = keep * (size_t)t / (size_t)T2; w2[t].hi = keep * (size_t)(t + 1) / (size_t)T2;
     }
+    int started2 = 1;
+    for (int t = 1; t < T2; ++t) { if (pthread_create(&tid[t], NULL, opp_pass2, &w2[t]) != 0) { w2[0].hi = w2[T2 - 1].hi; break; } started2 = t + 1; }
+    opp_pass2(&w2[0]);
+    for (int t = 1; t < started2; ++t) pthread_join(tid[t], NULL);
     free(chosen);
     free(cand);
     return commit(b, &next);
 }
 
-size_t belief_after_own(Belief *b, Move m, const char view[65]) {
-    read_settings();
-    b->last_own = m;
-    Vec next = {0};
-    char seen[65];
-    ViewMasks vm;
-    view_masks(view, b->us, &vm);
-    char theirs[65];
-    for (size_t i = 0; i < b->count; ++i) {
+typedef struct {
+    const Belief *b; const ViewMasks *vm; const char *view; Move m;
+    size_t lo, hi;
+    Vec next;
+} OwnPass;
+
+static void *own_pass(void *arg) {
+    OwnPass *w = arg;
+    const Belief *b = w->b;
+    char seen[65], theirs[65];
+    for (size_t i = w->lo; i < w->hi; ++i) {
         Position p = b->items[i];
         Undo u;
-        make_move(&p, m, &u);
-        if (!may_match(&p, &vm, b->us)) continue;
+        make_move(&p, w->m, &u);
+        if (!may_match(&p, w->vm, b->us)) continue;
         /* the referee ends the game on a move that leaves the mover's king
          * capturable: the game went on, so our move did not */
         if (prune_capturable && mover_left_king_capturable(&p)) continue;
         observation(&p, b->us, seen);
-        if (memcmp(seen, view, 64) != 0) continue;
+        if (memcmp(seen, w->view, 64) != 0) continue;
         /* the opponent does not see our move, only its view after it */
         observation(&p, b->us ^ 1, theirs);
         const uint64_t h = history_mix(b->hist ? b->hist[i] : 0, view_hash(theirs));
-        vec_push(&next, &p, h, b->logw ? b->logw[i] : 0.0f);   /* distinct positions stay distinct */
+        vec_push(&w->next, &p, h, b->logw ? b->logw[i] : 0.0f);   /* distinct positions stay distinct */
+    }
+    return NULL;
+}
+
+size_t belief_after_own(Belief *b, Move m, const char view[65]) {
+    read_settings();
+    b->last_own = m;
+    ViewMasks vm;
+    view_masks(view, b->us, &vm);
+    const int T = threads_for(b->count);
+    OwnPass w[MAX_THREADS];
+    pthread_t tid[MAX_THREADS];
+    for (int t = 0; t < T; ++t) {
+        memset(&w[t], 0, sizeof w[t]);
+        w[t].b = b; w[t].vm = &vm; w[t].view = view; w[t].m = m;
+        w[t].lo = b->count * (size_t)t / (size_t)T; w[t].hi = b->count * (size_t)(t + 1) / (size_t)T;
+    }
+    int started = 1;
+    for (int t = 1; t < T; ++t) { if (pthread_create(&tid[t], NULL, own_pass, &w[t]) != 0) { w[0].hi = w[t].hi; break; } started = t + 1; }
+    if (started < T) for (int t = started; t < T; ++t) w[t].hi = w[t].lo;
+    own_pass(&w[0]);
+    for (int t = 1; t < started; ++t) pthread_join(tid[t], NULL);
+    Vec next = w[0].next;
+    if (T > 1) {
+        size_t n = 0;
+        for (int t = 0; t < T; ++t) n += w[t].next.count;
+        if (n > next.capacity) {
+            next.capacity = n;
+            next.items = realloc(next.items, n * sizeof(Position));
+            next.hist = realloc(next.hist, n * sizeof(uint64_t));
+            next.logw = realloc(next.logw, n * sizeof(float));
+        }
+        for (int t = 1; t < T; ++t) {
+            const Vec *v = &w[t].next;
+            if (v->count) {
+                memcpy(next.items + next.count, v->items, v->count * sizeof(Position));
+                memcpy(next.hist + next.count, v->hist, v->count * sizeof(uint64_t));
+                memcpy(next.logw + next.count, v->logw, v->count * sizeof(float));
+                next.count += v->count;
+            }
+            free(v->items); free(v->hist); free(v->logw);
+        }
     }
     return commit(b, &next);
 }

@@ -5,7 +5,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 [ -f bin/stockfish ] && chmod +x bin/stockfish
 SOURCES="src/board.c src/belief.c src/movemodel.c src/cfr.c src/eval.c src/search.c src/gtcfr.c src/front.c src/sfeval.c src/main.c"
-FLAGS="-O2 -D_POSIX_C_SOURCE=199309L"
+FLAGS="-O2 -pthread -D_POSIX_C_SOURCE=199309L"
 for CC in gcc cc; do
     if command -v "$CC" >/dev/null 2>&1 && "$CC" -std=c11 $FLAGS $SOURCES -lm -o mist; then echo "build: done ($CC)"; exit 0; fi
 done

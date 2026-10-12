@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic
+CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Wpedantic -pthread
 SRC = src/board.c src/belief.c src/movemodel.c src/cfr.c src/eval.c src/search.c src/gtcfr.c src/front.c src/sfeval.c
 
 build/test_rules: $(SRC) tests/test_rules.c src/fow.h
