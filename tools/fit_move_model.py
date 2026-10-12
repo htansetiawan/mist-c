@@ -15,8 +15,9 @@ import numpy as np
 NAMES = ["capture", "captured_value", "king_capture", "knight", "bishop", "rook", "queen", "king",
          "double_push", "castle", "promote_queen", "underpromote", "forward", "retreat", "centre",
          "develop", "recapture", "advanced_pawn", "check", "escape", "into_attack", "hang_value",
-         "self_capturable", "undefended", "king_zone", "xray_king"]
-ATTACK = slice(18, 26)
+         "self_capturable", "undefended", "king_zone", "xray_king", "check_unseen", "threat_unseen"]
+ATTACK = slice(18, 28)
+CHECK, CHECK_UNSEEN, THREAT_UNSEEN = 18, 26, 27
 
 
 def load(path):
@@ -86,6 +87,12 @@ def report(label, theta, X, starts, counts, played, movers=None, names=None):
     top1 = (z[starts + played] >= best - 1e-12).mean()
     print(f"{label}: {len(starts)} positions; log-likelihood per move {logp.mean():.3f} nats vs uniform {uniform.mean():.3f} "
           f"(gain {logp.mean() - uniform.mean():+.3f}); top-1 {top1:.3f}; mean legal moves {counts.mean():.1f}")
+    # how much of the probability the model gives to the hidden threats that were played
+    for name, col in (("check", CHECK), ("check unseen", CHECK_UNSEEN), ("threat unseen", THREAT_UNSEEN)):
+        sel = X[starts + played, col] > 0
+        if sel.sum() > 0:
+            print(f"   played {name:14s} n={sel.sum():6d} mean model probability {np.exp(logp[sel]).mean():.3f}"
+                  f" (uniform {np.exp(uniform[sel]).mean():.3f})")
     if movers is not None and names:
         for mid in sorted(set(movers.tolist())):
             sel = movers == mid
@@ -100,18 +107,22 @@ def main():
     ap.add_argument("train"); ap.add_argument("test")
     ap.add_argument("--cheap", action="store_true", help="leave out the attack features")
     ap.add_argument("--movers", help="stderr of move_features for the test file (mover names)")
+    ap.add_argument("--baseline", help="comma-separated theta to report before fitting (e.g. the engine's)")
     args = ap.parse_args()
     Xtr, str_, ctr, ptr, mtr = load(args.train)
     Xte, ste, cte, pte, mte = load(args.test)
     if args.cheap:
         Xtr[:, ATTACK] = 0; Xte[:, ATTACK] = 0
-    theta = fit(Xtr, str_, ctr, ptr)
     names = {}
     if args.movers:
         for line in open(args.movers):
             if line.startswith("mover "):
                 _, i, name = line.split(maxsplit=2)
                 names[int(i)] = name.strip()
+    if args.baseline:
+        base = np.array([float(t) for t in args.baseline.split(",")])
+        report("baseline on test", base, Xte, ste, cte, pte, mte, names)
+    theta = fit(Xtr, str_, ctr, ptr)
     report("train", theta, Xtr, str_, ctr, ptr)
     report("test", theta, Xte, ste, cte, pte, mte, names)
     for name, t in zip(NAMES, theta):
