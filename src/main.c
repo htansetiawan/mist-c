@@ -211,6 +211,8 @@ int main(void) {
             memcpy(view, line, 65);
             view_at = now_seconds();
             if (views++ > 0 && b.count > 0) {
+                const double update_started = now_seconds();
+                const size_t before = b.count;
                 if (moved) belief_after_own(&b, last, view);
                 else {
                     const size_t afford = (size_t)(0.5 * move_budget(clock_left, increment, max_seconds) / per_position);
@@ -224,6 +226,8 @@ int main(void) {
                     belief_after_opponent(&b, view);
                     if (parents >= 1000) per_position = 0.5 * per_position + 0.5 * (now_seconds() - started) / (double)parents;
                 }
+                if (getenv("MIST_TIMING"))   /* diagnostics: the cost of each update */
+                    fprintf(stderr, "mist: timing %s update %.3f s |P| %zu -> %zu\n", moved ? "own" : "opp", now_seconds() - update_started, before, b.count);
             }
             front_see(&front, view);
             if (b.count == 0 && !moved && views > 1) {

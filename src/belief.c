@@ -273,6 +273,12 @@ static int by_key(const void *a, const void *b) {
 
 typedef struct { double key; uint32_t index; } Ranked;
 
+static int by_index_u32(const void *a, const void *b) {
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+
 static int by_rank(const void *a, const void *b) {
     const double x = ((const Ranked *)a)->key, y = ((const Ranked *)b)->key;
     return x < y ? -1 : x > y;
@@ -339,7 +345,30 @@ static void *opp_pass1(void *arg) {
             unmake_move(&p, l.moves[j], &u);
         }
     }
+    if (w->n > 1) qsort(w->cand, w->n, sizeof(Candidate), by_key);   /* the threads' runs merge in order */
     return NULL;
+}
+
+/* Moves the `keep` smallest keys of r[0..m) into r[0..keep), in no particular
+ * order: a three-way partition (expected linear time), not a sort. */
+static void select_smallest(Ranked *r, size_t m, size_t keep) {
+    size_t lo = 0, hi = m;
+    uint64_t seed = 0x5e1ec7ULL ^ m;
+    while (hi - lo > 1 && keep > lo && keep < hi) {
+        const size_t a = lo + (size_t)(next_random(&seed) % (hi - lo)), b = lo + (size_t)(next_random(&seed) % (hi - lo)), c = lo + (size_t)(next_random(&seed) % (hi - lo));
+        const double ka = r[a].key, kb = r[b].key, kc = r[c].key;
+        const double pivot = ka < kb ? (kb < kc ? kb : (ka < kc ? kc : ka)) : (ka < kc ? ka : (kb < kc ? kc : kb));
+        size_t lt = lo, i = lo, gt = hi;
+        while (i < gt) {
+            if (r[i].key < pivot) { Ranked t = r[lt]; r[lt] = r[i]; r[i] = t; ++lt; ++i; }
+            else if (r[i].key > pivot) { --gt; Ranked t = r[gt]; r[gt] = r[i]; r[i] = t; }
+            else ++i;
+        }
+        /* [lo, lt) < pivot, [lt, gt) == pivot, [gt, hi) > pivot */
+        if (keep <= lt) hi = lt;
+        else if (keep >= gt) lo = gt;
+        else return;   /* the boundary falls inside the equal band */
+    }
 }
 
 /* Pass 2 over the kept candidates [lo, hi): the positions with their
@@ -390,13 +419,20 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
     for (int t = 0; t < T; ++t) { n += w1[t].n; hist_lookups += w1[t].lookups; hist_hits += w1[t].hits; }
     Candidate *cand = w1[0].cand;
     if (T > 1) {
-        cand = realloc(cand, (n ? n : 1) * sizeof(Candidate));
-        size_t at = w1[0].n;
-        for (int t = 1; t < T; ++t) { memcpy(cand + at, w1[t].cand, w1[t].n * sizeof(Candidate)); at += w1[t].n; free(w1[t].cand); }
+        /* merge the threads' sorted runs */
+        cand = malloc((n ? n : 1) * sizeof(Candidate));
+        size_t at[MAX_THREADS];
+        for (int t = 0; t < T; ++t) at[t] = 0;
+        for (size_t k = 0; k < n; ++k) {
+            int pick = -1;
+            for (int t = 0; t < T; ++t)
+                if (at[t] < w1[t].n && (pick < 0 || w1[t].cand[at[t]].key < w1[pick].cand[at[pick]].key)) pick = t;
+            cand[k] = w1[pick].cand[at[pick]++];
+        }
+        for (int t = 0; t < T; ++t) free(w1[t].cand);
     }
     /* positions reached by several histories: weights add; the heaviest
      * history represents the position (search keys the opponent by it) */
-    if (n > 1) qsort(cand, n, sizeof(Candidate), by_key);
     size_t m = 0;
     for (size_t i = 0; i < n; ) {
         size_t j = i + 1;
@@ -417,10 +453,11 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
         b->overflowed = 1;
         Ranked *r = malloc(m * sizeof(Ranked));
         for (size_t i = 0; i < m; ++i) { r[i].key = log(-log(unit_open(&b->rng))) - cand[i].logw; r[i].index = (uint32_t)i; }
-        qsort(r, m, sizeof(Ranked), by_rank);
         keep = b->cap;
+        select_smallest(r, m, keep);
         for (size_t i = 0; i < keep; ++i) chosen[i] = r[i].index;
         free(r);
+        qsort(chosen, keep, sizeof(uint32_t), by_index_u32);   /* in candidate order, whatever the partition did */
     } else {
         for (size_t i = 0; i < m; ++i) chosen[i] = (uint32_t)i;
     }
@@ -516,10 +553,6 @@ size_t belief_after_own(Belief *b, Move m, const char view[65]) {
     return commit(b, &next);
 }
 
-static int by_index_u32(const void *a, const void *b) {
-    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
-    return x < y ? -1 : x > y;
-}
 
 size_t belief_shrink(Belief *b, size_t target) {
     if (b->count <= target) return b->count;
