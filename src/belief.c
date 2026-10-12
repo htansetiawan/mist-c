@@ -159,15 +159,20 @@ static size_t commit(Belief *b, Vec *next) {
 }
 
 /* Settings, read once: MIST_MODEL=0 weighs every consistent position alike;
- * MIST_MODEL_TEMP scales the model's log-likelihoods (default 1); the full
- * model (attack features) is used while |P| <= MIST_MODEL_FULL_BELOW (default
- * 10000), the cheap one above; MIST_PRUNE_CAPTURABLE=0 keeps positions the
- * referee's rule excludes. */
+ * MIST_MODEL_TEMP scales the model's log-likelihoods (default 2: sharper than
+ * the fitted model. On the regression suite at 2.5 s, 1.0 -> 2.0 cut the
+ * hidden-check losses from 73 to 63 of 300 (fixed 16, broke 6) and the
+ * centipawn loss on the material decisions by 7; 0.5 and 0.7 were worse on
+ * every measure and 3.0 was inside the noise of 2.0. The true board's rank
+ * barely moves: the gain is the sampled worlds concentrating on the model's
+ * plausible attacker placements); the full model (attack features) is used
+ * while |P| <= MIST_MODEL_FULL_BELOW (default 10000), the cheap one above;
+ * MIST_PRUNE_CAPTURABLE=0 keeps positions the referee's rule excludes. */
 static int settings_read = 0, model_on = 1, prune_capturable = 1;
 /* MIST_THREADS: threads over P for the updates (default 2: the arena's cores);
  * below 4000 positions the update stays on one */
 static int threads_setting = 2;
-static float model_temp = 1.0f;
+static float model_temp = 2.0f;
 static size_t model_full_below = 10000;
 
 /* Empirical opponent prior (MIST_HISTORY_TABLE, built by tools/history_table.c):

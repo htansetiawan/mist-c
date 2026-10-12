@@ -155,9 +155,13 @@ static double now_seconds(void) {
 /* (remaining - reserve) / divisor + 80% of the increment, capped at max_seconds
  * and at 30% of what is left. The arena games are decided early: of 283
  * decisive bad moves in our v25-v33 losses, half came by our 10th decision and
- * 90% by the 18th, while remaining/30 left a median 77 s unused at the end.
- * MIST_DIVISOR and MIST_RESERVE set the shape (defaults 30 and 0 = v9). */
-static double budget_divisor = 30.0, budget_reserve = 0.0;
+ * 90% by the 18th, while remaining/30 left a median 77 s unused at the end
+ * (v33: 85 s after 30 decisions, 42 s after 70). Divisor 20 spends the full
+ * max_seconds on the first ten decisions and, by the model fitted on v33's
+ * clocks, still keeps 20 s in a 100-decision game; on the regression suite
+ * 1 s -> 6 s a decision fixed 12 and broke 5 of the material losses.
+ * MIST_DIVISOR and MIST_RESERVE set the shape (30 and 0 = v9/v10). */
+static double budget_divisor = 20.0, budget_reserve = 0.0;
 static double move_budget(double remaining, double increment, double max_seconds) {
     double budget = (remaining - budget_reserve) / budget_divisor + 0.8 * increment;
     if (budget < 0.3) budget = 0.3;
