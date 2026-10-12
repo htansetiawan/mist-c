@@ -9,7 +9,9 @@ FLAGS="-O2 -pthread -D_POSIX_C_SOURCE=199309L"
 for CC in gcc cc; do
     if command -v "$CC" >/dev/null 2>&1 && "$CC" -std=c11 $FLAGS $SOURCES -lm -o mist; then echo "build: done ($CC)"; exit 0; fi
 done
-if g++ -x c -std=c11 $FLAGS $SOURCES -lm -o mist 2>/dev/null; then echo "build: done (g++ -x c)"; exit 0; fi
+# g++'s C front end: one file per call, since -x c covers only the first of
+# several sources on g++ 12
+if (rm -rf build-xc && mkdir build-xc && for f in $SOURCES; do g++ -x c -std=c11 $FLAGS -c "$f" -o "build-xc/$(basename "$f" .c).o" || exit 1; done && g++ $FLAGS build-xc/*.o -lm -o mist) 2>/dev/null; then echo "build: done (g++ -x c)"; exit 0; fi
 if g++ -x c++ -std=c++20 -fpermissive -w $FLAGS $SOURCES -lm -o mist; then echo "build: done (g++ as C++)"; exit 0; fi
 echo "build: failed" >&2
 exit 1
