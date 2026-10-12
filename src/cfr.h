@@ -54,6 +54,8 @@ void game_start_on(Game *g, int infoset, int action);
 void pcfr_iteration(Game *g, int t);
 /* Current (last-iterate) behaviour strategy of every infoset into `out` (n_slots). */
 void pcfr_current(const Game *g, double *out);
+/* The same for one information set (its `actions` entries). */
+void pcfr_infoset_strategy(const Game *g, int I, double *out);
 /* Average strategy (weighted by iteration) into `out`. */
 void pcfr_average(const Game *g, double *out);
 /* Expected utility for player 0 when both play `strategy` (n_slots). */

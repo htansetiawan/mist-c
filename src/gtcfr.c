@@ -28,6 +28,7 @@ typedef struct {
     int us;
     double root_loss;            /* our root move leaving our king capturable: -kappa */
     int best_init;               /* new information sets start on their best child */
+    int fresh_uniform;           /* a walk into an information set newer than the strategy picks uniformly */
     unsigned long long rng;
 } Tree;
 
@@ -99,7 +100,7 @@ static int has_move(const MoveList *l, Move m) {
  * not legal in `p` (an en passant that only some boards allow) keeps `p`'s
  * evaluation. Returns the number of moves (0 = no legal move). */
 /* `sf`, `sf_cp`, `sf_found`: Stockfish's scores of the mover's moves, fetched
- * by the caller (sf_submit/sf_collect over the workers); sf = 0 means none. */
+ * by the caller (sf_submit/sf_collect over the workers); sf = how many. */
 static int build_children_scored(Tree *t, const Position *p, const uint64_t hist[2], int *kids, const MoveList *only,
                                  int sf, const int *sf_cp, const int *sf_found) {
     const int mover = p->side, other = mover ^ 1, us = t->us;
@@ -107,6 +108,15 @@ static int build_children_scored(Tree *t, const Position *p, const uint64_t hist
     MoveList l; generate_moves(p, &l);
     MoveList own;
     if (only) { own = l; l = *only; }
+    /* `sf` is how many moves Stockfish scored; a full MultiPV set ranks the
+     * rest below its worst line */
+    const int ranked = sf > 0 && sf >= sf_multipv();
+    double floor_v = 0;
+    if (ranked) {
+        int worst = 0, seen = 0;
+        for (int a = 0; a < l.count; ++a) if (sf_found[a] && (!seen || sf_cp[a] < worst)) { worst = sf_cp[a]; seen = 1; }
+        floor_v = tanh(worst / 400.0);
+    }
     char view[65];
     for (int a = 0; a < l.count; ++a) {
         if (only && !has_move(&own, l.moves[a])) { kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, evaluate(p, us)); continue; }
@@ -119,9 +129,13 @@ static int build_children_scored(Tree *t, const Position *p, const uint64_t hist
         observation(&q, mover, view); h[me] = history_mix(history_mix(hist[me], l.moves[a]), view_hash(view));
         observation(&q, other, view); h[1 - me] = history_mix(hist[1 - me], view_hash(view));
         double value;
-        if (sf && sf_found[a]) {
+        if (sf > 0 && sf_found[a]) {
             const double v = tanh(sf_cp[a] / 400.0);
             value = mover == us ? v : -v;
+        } else if (ranked) {
+            /* Stockfish scored its MultiPV best moves and left this one out:
+             * it is no better than the worst it scored */
+            value = mover == us ? floor_v : -floor_v;
         } else {
             value = evaluate(&q, us);
         }
@@ -137,7 +151,7 @@ static int build_children(Tree *t, const Position *p, const uint64_t hist[2], in
     int sf_cp[256], sf_found[256];
     MoveList l; generate_moves(p, &l);
     if (only) l = *only;
-    const int sf = sf_ready() && sf_children(p, &l, sf_cp, sf_found) > 0;
+    const int sf = sf_ready() ? sf_children(p, &l, sf_cp, sf_found) : 0;
     return build_children_scored(t, p, hist, kids, only, sf, sf_cp, sf_found);
 }
 
@@ -170,7 +184,7 @@ static int expand_scored(Tree *t, int index, int sf, const int *sf_cp, const int
 static int expand(Tree *t, int index) {
     int sf_cp[256], sf_found[256];
     MoveList l; generate_moves(&t->leaves[index].pos, &l);
-    const int sf = sf_ready() && sf_children(&t->leaves[index].pos, &l, sf_cp, sf_found) > 0;
+    const int sf = sf_ready() ? sf_children(&t->leaves[index].pos, &l, sf_cp, sf_found) : 0;
     return expand_scored(t, index, sf, sf_cp, sf_found);
 }
 
@@ -190,7 +204,7 @@ static int expand_batch(Tree *t, const int *picked, int n) {
         for (int j = 0; j < W && i + j < n; ++j) {
             int sf_cp[256], sf_found[256];
             MoveList l; generate_moves(&t->leaves[picked[i + j]].pos, &l);
-            const int sf = sent[j] && sf_collect(j, &l, sf_cp, sf_found) > 0;
+            const int sf = sent[j] ? sf_collect(j, &l, sf_cp, sf_found) : 0;
             grown += expand_scored(t, picked[i + j], sf, sf_cp, sf_found);
         }
     }
@@ -225,26 +239,35 @@ static int pick_once(Tree *t, int explorer, const double *x, int x_slots) {
             for (int i = 0; i < n->count; ++i) { acc += t->g.prob[n->first + i]; if (r <= acc) { pick = i; break; } }
         } else {
             const int o = t->g.is_offset[n->infoset];
-            if (o + n->count > x_slots || o + n->count > t->cap_visits) return -1;
+            if (o + n->count > t->cap_visits) return -1;
+            const double *xs = x + o;
+            double fresh[256];
+            if (o + n->count > x_slots) {
+                /* an information set made since the strategy was read: its
+                 * own current strategy (the best-child start, typically) */
+                if (!t->fresh_uniform) return -1;
+                pcfr_infoset_strategy(&t->g, n->infoset, fresh);
+                xs = fresh;
+            }
             if (n->player == explorer) {
                 if (next_random(&t->rng) & 1) {
                     /* uniform over the support of the current strategy */
                     int support[256], s = 0;
-                    for (int a = 0; a < n->count; ++a) if (x[o + a] > 1e-6) support[s++] = a;
+                    for (int a = 0; a < n->count; ++a) if (xs[a] > 1e-6) support[s++] = a;
                     pick = s ? support[next_random(&t->rng) % (unsigned long long)s] : (int)(next_random(&t->rng) % (unsigned long long)n->count);
                 } else {
                     /* PUCT: current strategy as the prior, visit bonus */
                     int total = 0; for (int a = 0; a < n->count; ++a) total += t->visits[o + a];
                     double best = -1;
                     for (int a = 0; a < n->count; ++a) {
-                        const double score = x[o + a] + sqrt((double)total + 1.0) / (1.0 + t->visits[o + a]);
+                        const double score = xs[a] + sqrt((double)total + 1.0) / (1.0 + t->visits[o + a]);
                         if (score > best) { best = score; pick = a; }
                     }
                 }
             } else {
                 double r = (next_random(&t->rng) >> 11) * (1.0 / 9007199254740992.0), acc = 0;
                 pick = n->count - 1;
-                for (int a = 0; a < n->count; ++a) { acc += x[o + a]; if (r <= acc) { pick = a; break; } }
+                for (int a = 0; a < n->count; ++a) { acc += xs[a]; if (r <= acc) { pick = a; break; } }
             }
             t->visits[o + pick] += 1;
         }
@@ -305,7 +328,74 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     ensure_visits(&t);
     double *x = malloc(sizeof(double) * (size_t)t.g.n_slots);
     int iteration = 0, explorer = 0, grown = 0;
-    while (seconds_since(&t0) < params->seconds * 0.85) {
+    const int W = sf_workers();
+    /* MIST_ASYNC=1: pipelined growth. Every worker keeps a leaf in flight,
+     * the solver iterates while they think (MIST_ITERS iterations per
+     * expansion, default 0.3 like the round loop's 10 per 32), and
+     * whichever answers first is expanded and replaced. On two cores it
+     * expands 15-25% more leaves in the same time; the regression suite
+     * (check and fatal decisions, 2.5 s) showed no gain from that, so the
+     * round loop stays the default until a bench says otherwise. */
+    const int async = W > 0 && getenv("MIST_ASYNC") && atoi(getenv("MIST_ASYNC")) != 0;
+    if (async) {
+        const double iters_per = getenv("MIST_ITERS") ? atof(getenv("MIST_ITERS")) : 0.3;
+        int inflight[8];
+        for (int w = 0; w < 8; ++w) inflight[w] = -1;
+        t.fresh_uniform = 1;
+        pcfr_current(&t.g, x);
+        int x_slots = t.g.n_slots, stale = 0, since_refresh = 0;
+        double credit = iters_per;
+        while (seconds_since(&t0) < params->seconds * 0.85) {
+            /* the walks read a strategy a few iterations or expansions old:
+             * reading it costs a pass over every slot, like an iteration */
+            if (stale >= 4 || since_refresh >= 8) {
+                x = realloc(x, sizeof(double) * (size_t)t.g.n_slots);
+                pcfr_current(&t.g, x);
+                x_slots = t.g.n_slots; stale = 0; since_refresh = 0;
+            }
+            int busy = 0;
+            for (int w = 0; w < W; ++w) {
+                if (inflight[w] >= 0) { ++busy; continue; }
+                if (t.g.n_nodes >= params->max_nodes) continue;
+                const int li = pick_once(&t, explorer, x, x_slots);
+                explorer ^= 1;
+                if (li < 0) break;
+                if (sf_submit(w, &t.leaves[li].pos)) { inflight[w] = li; ++busy; }
+                else {   /* a position Stockfish does not take: our evaluator, now */
+                    grown += expand_scored(&t, li, 0, NULL, NULL);
+                    game_grow(&t.g); ensure_visits(&t); ++since_refresh;
+                }
+            }
+            int ready = sf_poll(0);
+            if (!ready) {
+                if (credit >= 1.0 || !busy) { pcfr_iteration(&t.g, ++iteration); credit -= 1.0; ++stale; }
+                else ready = sf_poll(2);
+                if (!ready) continue;
+            }
+            for (int w = 0; w < W; ++w) {
+                if (!(ready & (1 << w)) || inflight[w] < 0) continue;
+                const int li = inflight[w]; inflight[w] = -1;
+                int sf_cp[256], sf_found[256];
+                MoveList l; generate_moves(&t.leaves[li].pos, &l);
+                const int sf = sf_collect(w, &l, sf_cp, sf_found);
+                grown += expand_scored(&t, li, sf, sf_cp, sf_found);
+                ++since_refresh;
+                if (credit < 50.0) credit += iters_per;
+            }
+            game_grow(&t.g); ensure_visits(&t);
+        }
+        /* answers still in flight are paid for: take them in */
+        for (int w = 0; w < W; ++w) {
+            if (inflight[w] < 0) continue;
+            const int li = inflight[w]; inflight[w] = -1;
+            int sf_cp[256], sf_found[256];
+            MoveList l; generate_moves(&t.leaves[li].pos, &l);
+            const int sf = sf_collect(w, &l, sf_cp, sf_found);
+            grown += expand_scored(&t, li, sf, sf_cp, sf_found);
+        }
+        game_grow(&t.g); ensure_visits(&t);
+    }
+    while (!async && seconds_since(&t0) < params->seconds * 0.85) {
         for (int i = 0; i < params->iterations_per_round; ++i) pcfr_iteration(&t.g, ++iteration);
         if (t.g.n_nodes >= params->max_nodes) continue;
         x = realloc(x, sizeof(double) * (size_t)t.g.n_slots);

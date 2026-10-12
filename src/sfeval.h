@@ -25,8 +25,17 @@ int sf_children(const Position *p, const MoveList *l, int *cp, int *found);
  * sf_collect waits for that worker's answer and scores `l` as sf_children
  * does. sf_workers() is how many workers can take a request (0 = off). */
 int sf_workers(void);
+/* Lines a call scores at most (MIST_SF_MULTIPV): a call that scores this
+ * many has ranked the rest below them. */
+int sf_multipv(void);
 int sf_submit(int worker, const Position *p);
 int sf_collect(int worker, const MoveList *l, int *cp, int *found);
+/* Which workers hold a complete answer, as a bit mask over the workers in
+ * flight; waits up to timeout_ms for the first (0: just look). A worker in
+ * the mask answers sf_collect without blocking. sf_pending: a request is in
+ * flight on `worker`. */
+int sf_poll(int timeout_ms);
+int sf_pending(int worker);
 /* Calls made and their total wall time, for the decision log. */
 void sf_stats(long *calls, double *seconds);
 void sf_stop(void);

@@ -22,12 +22,12 @@ typedef struct {
     int to_fd, from_fd, alive, pending;
     pid_t child;
     char buf[1 << 16];
-    size_t have, start;
+    size_t have, start, scanned;   /* scanned: no bestmove line begins before here */
     double started;
 } Worker;
 
 static Worker workers[MAX_WORKERS];
-static int n_workers = 0, restarts = 0;
+static int n_workers = 0, restarts = 0, multipv_set = 256;
 static char engine_path[512] = "";
 static long calls = 0;
 static double spent = 0;
@@ -76,8 +76,8 @@ static int read_line(Worker *w, char *out, size_t cap, int timeout_ms) {
                 return 1;
             }
         }
-        if (w->start > 0) { memmove(w->buf, w->buf + w->start, w->have - w->start); w->have -= w->start; w->start = 0; }
-        if (w->have == sizeof w->buf) w->have = 0;   /* an absurd line: drop it */
+        if (w->start > 0) { memmove(w->buf, w->buf + w->start, w->have - w->start); w->have -= w->start; w->scanned = w->scanned > w->start ? w->scanned - w->start : 0; w->start = 0; }
+        if (w->have == sizeof w->buf) { w->have = 0; w->scanned = 0; }   /* an absurd line: drop it */
         const int left = (int)((deadline - now()) * 1000);
         if (left <= 0) return 0;
         struct pollfd pfd = {w->from_fd, POLLIN, 0};
@@ -116,8 +116,17 @@ static int launch(Worker *w, const char *path) {
     }
     close(in[0]); close(out[1]);
     w->to_fd = in[1]; w->from_fd = out[0]; w->alive = 1;
+    /* MIST_SF_MULTIPV: how many of the mover's moves a call scores (the
+     * best first; the rest get our evaluator). A depth-1 call costs about
+     * 0.05 ms per line, 0.3 ms with 20 moves and 1.8 ms with 35 at 256 */
+    int multipv = getenv("MIST_SF_MULTIPV") ? atoi(getenv("MIST_SF_MULTIPV")) : 256;
+    if (multipv < 1) multipv = 1;
+    if (multipv > 256) multipv = 256;
+    multipv_set = multipv;
+    char setup[200];
+    snprintf(setup, sizeof setup, "setoption name Threads value 1\nsetoption name Hash value 16\nsetoption name MultiPV value %d\nisready\n", multipv);
     if (!send_line(w, "uci\n") || !wait_for(w, "uciok", 5000) ||
-        !send_line(w, "setoption name Threads value 1\nsetoption name Hash value 16\nsetoption name MultiPV value 256\nisready\n") ||
+        !send_line(w, setup) ||
         !wait_for(w, "readyok", 5000)) {
         stop_worker(w);
         return 0;
@@ -153,6 +162,7 @@ static int relaunch(Worker *w) {
 
 int sf_ready(void) { return n_workers > 0 && workers[0].alive; }
 int sf_workers(void) { return sf_ready() ? n_workers : 0; }
+int sf_multipv(void) { return multipv_set; }
 
 void sf_stats(long *c, double *s) { *c = calls; *s = spent; }
 
@@ -205,6 +215,7 @@ int sf_submit(int worker, const Position *p) {
     sf_fen(p, fen);
     snprintf(cmd, sizeof cmd, "position fen %s\ngo depth 1\n", fen);
     w->started = now();
+    w->scanned = w->start;
     if (!send_line(w, cmd)) { relaunch(w); return 0; }
     w->pending = 1;
     return 1;
@@ -245,6 +256,53 @@ int sf_collect(int worker, const MoveList *l, int *cp, int *found) {
     }
     ++calls; spent += now() - w->started;
     return scored;
+}
+
+int sf_pending(int worker) {
+    return sf_ready() && worker >= 0 && worker < n_workers && workers[worker].pending;
+}
+
+/* Does the unread part of the buffer hold a complete bestmove line? The
+ * scan resumes where the last one stopped: Stockfish writes its MultiPV
+ * lines in pieces and each piece wakes the poll. */
+static int answer_complete(Worker *w) {
+    const char *end = w->buf + w->have;
+    size_t from = w->scanned > w->start ? w->scanned : w->start;
+    for (const char *p = w->buf + from; p + 8 <= end; ++p) {
+        if ((p == w->buf || p[-1] == '\n') && memcmp(p, "bestmove", 8) == 0) {
+            for (const char *q = p + 8; q < end; ++q) if (*q == '\n') return 1;
+            w->scanned = (size_t)(p - w->buf);
+            return 0;
+        }
+    }
+    w->scanned = end - w->buf >= 8 ? (size_t)(end - w->buf) - 8 : 0;
+    return 0;
+}
+
+int sf_poll(int timeout_ms) {
+    struct pollfd pfd[MAX_WORKERS];
+    int map[MAX_WORKERS], n = 0, mask = 0;
+    if (!sf_ready()) return 0;
+    for (int i = 0; i < n_workers; ++i) {
+        Worker *w = &workers[i];
+        if (!w->pending) continue;
+        if (answer_complete(w)) { mask |= 1 << i; continue; }
+        pfd[n].fd = w->from_fd; pfd[n].events = POLLIN; pfd[n].revents = 0; map[n++] = i;
+    }
+    if (mask || n == 0) return mask;
+    const int r = poll(pfd, n, timeout_ms);
+    if (r <= 0) return 0;
+    for (int j = 0; j < n; ++j) {
+        if (!(pfd[j].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+        Worker *w = &workers[map[j]];
+        if (w->start > 0) { memmove(w->buf, w->buf + w->start, w->have - w->start); w->have -= w->start; w->scanned = w->scanned > w->start ? w->scanned - w->start : 0; w->start = 0; }
+        if (w->have == sizeof w->buf) { mask |= 1 << map[j]; continue; }   /* let sf_collect deal with it */
+        const ssize_t got = read(w->from_fd, w->buf + w->have, sizeof w->buf - w->have);
+        if (got > 0) w->have += (size_t)got;
+        else if (got == 0 || (got < 0 && errno != EINTR && errno != EAGAIN)) { mask |= 1 << map[j]; continue; }   /* dead: collect relaunches */
+        if (answer_complete(w)) mask |= 1 << map[j];
+    }
+    return mask;
 }
 
 int sf_children(const Position *p, const MoveList *l, int *cp, int *found) {

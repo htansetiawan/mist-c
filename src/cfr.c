@@ -105,6 +105,8 @@ static void strategy_of(const Game *g, int I, double *x) {
     for (int a = 0; a < n; ++a) x[a] = total > 0 ? x[a] / total : 1.0 / n;
 }
 
+void pcfr_infoset_strategy(const Game *g, int I, double *out) { strategy_of(g, I, out); }
+
 void pcfr_current(const Game *g, double *out) {
     for (int I = 0; I < g->n_infosets; ++I) strategy_of(g, I, out + g->is_offset[I]);
 }
