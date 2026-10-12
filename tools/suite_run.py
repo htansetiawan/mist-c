@@ -2,7 +2,7 @@
 
     python3 tools/suite_run.py SUITE.json OUT.json [--mist build/mist] [--env K=V ...]
                                [--seconds 2.5] [--workers 6] [--kinds material,check,fatal]
-                               [--limit N] [--seed 1] [--stockfish PATH]
+                               [--limit N] [--seed 1] [--stockfish PATH] [--truth RAW_DIR]
 
 Each suite decision is replayed (our earlier moves forced, the referee input
 reproduced from the frames) and the searched move is scored on the true board:
@@ -21,6 +21,7 @@ same suite and seed: the decisions are paired.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from multiprocessing import Pool
@@ -65,9 +66,17 @@ def score_cp(b: chess.Board, col: bool):
     return None
 
 
+def truth_seq(entry):
+    """The true boards of the game through the decision's view, for MIST_TRUTH_SEQ."""
+    rp = json.load(open(os.path.join(ARGS.truth, "games", entry["game"], "replay.json")))
+    return ",".join(f["board"] for f in rp["frames"][:entry["ply"] + 1])
+
+
 def run_one(entry):
     env = dict(os.environ, MIST_FORCE_MOVES=entry["forced"], MIST_STOCKFISH=ARGS.stockfish,
                MIST_MAX_SECONDS=str(ARGS.seconds), FOW_SEED=str(ARGS.seed))
+    if ARGS.truth:
+        env["MIST_TRUTH_SEQ"] = truth_seq(entry)
     for kv in ARGS.env:
         k, v = kv.split("=", 1)
         env[k] = v
@@ -89,6 +98,14 @@ def run_one(entry):
     info = [l for l in out.stderr.splitlines() if l.startswith("mist: n=")]
     if info:
         res["info"] = info[-1][6:]
+    truth = [l for l in out.stderr.splitlines() if l.startswith("mist: truth")]
+    if truth:
+        # the belief after the last update: is the true board in it, with what share, at what rank
+        m = re.search(r"share=([\d.]+) rank=(\d+)", truth[-1])
+        res["truth_lost"] = "LOST" in truth[-1]
+        if m:
+            res["truth_share"] = float(m.group(1))
+            res["truth_rank"] = int(m.group(2))
     best = score_cp(b, col)
     if best is not None:
         b2 = b.copy(stack=False)
@@ -108,6 +125,11 @@ def summarize(results):
             continue
         safe = [r for r in rs if r["safe"]]
         cps = sorted(r["cp_loss"] for r in rs if "cp_loss" in r)
+        tr = [r for r in rs if "truth_lost" in r]
+        if tr:
+            ranks = sorted(r.get("truth_rank", 10**9) for r in tr)
+            shares = sorted(r.get("truth_share", 0.0) for r in tr)
+            lines.append(f"{kind:9s} truth in P {sum(not r['truth_lost'] for r in tr)}/{len(tr)} | rank med {ranks[len(ranks) // 2]} p25 {ranks[len(ranks) // 4]} | share med {shares[len(shares) // 2]:.4f} | in top 10: {sum(r.get('truth_rank', 10**9) <= 10 for r in tr) / len(tr):.3f}")
         lines.append(f"{kind:9s} n {len(rs):4d} | fatal {sum(r['fatal'] for r in safe)}/{len(safe)} ({sum(r['fatal'] for r in safe) / max(len(safe), 1):.3f} where a safe move existed)"
                      f" | cp loss mean {sum(cps) / max(len(cps), 1):6.1f} median {cps[len(cps) // 2] if cps else 0:4d} (n {len(cps)})"
                      f" | repeats the game move {sum(r['repeat'] for r in rs) / len(rs):.3f}")
@@ -129,6 +151,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--stockfish", default=os.environ.get("MIST_STOCKFISH", "bin/stockfish"))
+    ap.add_argument("--truth", default="", help="replay store: also track the true board's share and rank in the belief")
     args = ap.parse_args()
     kinds = set(args.kinds.split(","))
     suite = [e for e in json.load(open(args.suite)) if e["kind"] in kinds]

@@ -315,9 +315,11 @@ int main(void) {
             last = r.move; moved = 1; ++decisions;
             continue;
         }
+        /* one move the view allows: play it, the clock keeps the budget */
+        if (allowed.count == 1) { r.move = allowed.moves[0]; r.our_moves = 1; r.probability = 1.0; ok = 1; }
         /* GT-CFR by default (MIST_SEARCH=twoply for the fixed two-ply search) */
         const int twoply = getenv("MIST_SEARCH") && strcmp(getenv("MIST_SEARCH"), "twoply") == 0;
-        if (b.count > 0) ok = twoply ? search_decide(&b, &sp, &r) : gtcfr_decide(&b, &gp, &r);
+        if (!ok && b.count > 0) ok = twoply ? search_decide(&b, &sp, &r) : gtcfr_decide(&b, &gp, &r);
         if (!ok) {
             /* last resort: decide on the position we can see */
             Position seen; front_view_position(view, us, front.castle, &seen);
