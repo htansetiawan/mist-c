@@ -159,15 +159,21 @@ static size_t commit(Belief *b, Vec *next) {
 }
 
 /* Settings, read once: MIST_MODEL=0 weighs every consistent position alike;
- * MIST_MODEL_TEMP scales the model's log-likelihoods (default 2: sharper than
- * the fitted model. On the regression suite at 2.5 s, 1.0 -> 2.0 cut the
- * hidden-check losses from 73 to 63 of 300 (fixed 16, broke 6) and the
- * centipawn loss on the material decisions by 7; 0.5 and 0.7 were worse on
- * every measure and 3.0 was inside the noise of 2.0. The true board's rank
- * barely moves: the gain is the sampled worlds concentrating on the model's
- * plausible attacker placements); the full model (attack features) is used
- * while |P| <= MIST_MODEL_FULL_BELOW (default 10000), the cheap one above;
- * MIST_PRUNE_CAPTURABLE=0 keeps positions the referee's rule excludes. */
+ * the full model (attack features) is used while |P| <= MIST_MODEL_FULL_BELOW
+ * (default 10000), the cheap one above; MIST_PRUNE_CAPTURABLE=0 keeps
+ * positions the referee's rule excludes.
+ * MIST_MODEL_TEMP (default 2) scales the model's log-likelihoods: the belief
+ * is weight^temp of the fitted one (up to merges), a sharper posterior. On
+ * the regression suite at 2.5 s, 1.0 -> 2.0 cut the hidden-check losses from
+ * 73 to 63 of 300 and the centipawn loss on the material decisions by 7,
+ * with 0.5 and 0.7 worse on every measure and 3.0 inside the noise of 2.0.
+ * The whole gain came through the king guard's risk estimate (with these
+ * weights it keeps only the moves safe where the belief is concentrated:
+ * 17-41 root moves became 1-2 on the decisions it fixed); the same rule put
+ * a 3% opening queen check under the guard's threshold (two 7-9-ply losses),
+ * so the guard also applies its rule under weight^(1/temp), the fitted
+ * weighting (main.c). Sharpening only the search's sampled worlds, with the
+ * guard on the fitted weights, measured as the 1.0 numbers. */
 static int settings_read = 0, model_on = 1, prune_capturable = 1;
 /* MIST_THREADS: threads over P for the updates (default 2: the arena's cores);
  * below 4000 positions the update stays on one */
@@ -219,6 +225,8 @@ static unsigned history_counts(uint64_t h, const MoveList *l, unsigned *c) {
 }
 
 void belief_history_stats(unsigned long *lookups, unsigned long *hits) { *lookups = hist_lookups; *hits = hist_hits; }
+static void read_settings(void);
+double belief_temperature(void) { read_settings(); return model_temp; }
 
 static void read_settings(void) {
     if (settings_read) return;
@@ -342,6 +350,9 @@ static void *opp_pass1(void *arg) {
                     c->key = position_key(&p);
                     c->parent = (uint32_t)i;
                     c->move = l.moves[j];
+                    /* tempered log-likelihood: the belief is weight^temp of the fitted
+                     * one up to merges; the king guard recovers the fitted weighting as
+                     * weight^(1/temp) for its calibrated rule (main.c) */
                     c->logw = base + (!model_on ? 0.0f : N > 0
                         ? model_temp * logf(((float)hc[j] + hist_n0 * expf(logit[j] - log_z)) / ((float)N + hist_n0))
                         : model_temp * (logit[j] - log_z));

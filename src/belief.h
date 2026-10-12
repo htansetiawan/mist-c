@@ -44,6 +44,8 @@ uint64_t view_hash(const char view[65]);
 uint64_t history_mix(uint64_t h, uint64_t value);
 /* Empirical opponent prior (MIST_HISTORY_TABLE): histories looked up and found so far. */
 void belief_history_stats(unsigned long *lookups, unsigned long *hits);
+/* the belief's sampling temperature (MIST_MODEL_TEMP), for the king guard's sharper weighting */
+double belief_temperature(void);
 
 void belief_init_start(Belief *b, int our_color, size_t cap);
 void belief_free(Belief *b);

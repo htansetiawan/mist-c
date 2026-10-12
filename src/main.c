@@ -130,20 +130,23 @@ static void truth_report(const Belief *b, const char *seq, int view_index) {
     fprintf(stderr, "mist: truth v=%d |P|=%zu%s share=%.5f rank=%zu\n", view_index, b->count, b->overflowed ? "(capped)" : "", total > 0 ? mine / total : 0, rank);
 }
 
-/* king_risk on at most `cap` boards of P, evenly strided (weights kept) */
-static double king_risk_capped(const Belief *b, Move m, size_t cap) {
-    if (b->count <= cap) return king_risk(b, m);
-    const size_t stride = (b->count + cap - 1) / cap;
-    double total = 0, lost = 0;
+/* king_risk on at most `cap` boards of P, evenly strided, under the belief's
+ * weights (*rt: weight^temp of the fitted model, belief.c) and under the
+ * fitted weighting recovered as weight^(1/temp) (*r1) */
+static void king_risks(const Belief *b, Move m, size_t cap, double temp, double *r1, double *rt) {
+    const size_t stride = b->count > cap ? (b->count + cap - 1) / cap : 1;
+    double t1 = 0, l1 = 0, tt = 0, lt = 0;
     for (size_t i = 0; i < b->count; i += stride) {
-        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        const double lw = b->logw ? (double)b->logw[i] : 0.0;
+        const double wt = exp(lw), w1 = exp(lw / temp);
         Position p = b->items[i];
         Undo u;
         make_move(&p, m, &u);
-        total += w;
-        if (mover_left_king_capturable(&p)) lost += w;
+        t1 += w1; tt += wt;
+        if (mover_left_king_capturable(&p)) { l1 += w1; lt += wt; }
     }
-    return total > 0 ? lost / total : 0;
+    *r1 = t1 > 0 ? l1 / t1 : 0;
+    *rt = tt > 0 ? lt / tt : 0;
 }
 
 static double now_seconds(void) {
@@ -186,6 +189,8 @@ int main(void) {
     const double kappa = getenv("MIST_KING_RISK") ? atof(getenv("MIST_KING_RISK")) : 2.0;
     /* MIST_KING_GUARD: leave out moves this far above the safest king risk (negative: off) */
     const double guard = getenv("MIST_KING_GUARD") ? atof(getenv("MIST_KING_GUARD")) : 0.02;
+    /* MIST_GUARD_TEMP: the sharper weighting's temperature (default: the belief's) */
+    const double guard_temp = getenv("MIST_GUARD_TEMP") ? atof(getenv("MIST_GUARD_TEMP")) : belief_temperature();
     /* MIST_MATERIAL_GUARD: leave out moves whose expected one-ply material
      * loss on P exceeds the least by this many pawns (negative: off) */
     const double mguard = getenv("MIST_MATERIAL_GUARD") ? atof(getenv("MIST_MATERIAL_GUARD")) : -1.0;
@@ -285,18 +290,39 @@ int main(void) {
             have_mrisk = 1;
         }
         if (guard >= 0 && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
-            double risk[256], least = 1;
-            for (int i = 0; i < allowed.count; ++i) { risk[i] = king_risk_capped(&b, allowed.moves[i], 20000); if (risk[i] < least) least = risk[i]; }
+            /* Two weightings. The fitted one catches a check the belief gives
+             * a few percent (the a5 queen check after 1.d4: 3%). The sharper
+             * one (weight^temp) keeps only the moves safe where the belief
+             * is concentrated: on the regression suite it cut the hidden-
+             * check losses 73 -> 63 of 300, and alone it let the a5 check
+             * through (two 7-9-ply losses). A move is out when it is above
+             * the safest under either; if that leaves nothing, under the
+             * sharper one alone. guard_temp 1 is the fitted guard only. */
+            double risk[256], riskt[256], least = 1, leastt = 1;
+            for (int i = 0; i < allowed.count; ++i) {
+                king_risks(&b, allowed.moves[i], 20000, guard_temp, &risk[i], &riskt[i]);
+                if (risk[i] < least) least = risk[i];
+                if (riskt[i] < leastt) leastt = riskt[i];
+            }
+            int out[256], dropped = 0;
+            for (int pass = 0; pass < 2; ++pass) {
+                dropped = 0;
+                for (int i = 0; i < allowed.count; ++i) {
+                    out[i] = riskt[i] > leastt + guard || (pass == 0 && risk[i] > least + guard);
+                    dropped += out[i];
+                }
+                if (dropped < allowed.count) break;
+            }
             int n = gp.avoid_count;
             for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
-            int dropped = 0, mdropped = 0;
+            int mdropped = 0;
             for (int i = 0; i < allowed.count; ++i) {
-                if (risk[i] > least + guard) { guarded[n++] = allowed.moves[i]; ++dropped; }
+                if (out[i]) guarded[n++] = allowed.moves[i];
                 else if (mguard >= 0 && have_mrisk && mrisk[i] > mleast + mguard) { guarded[n++] = allowed.moves[i]; ++mdropped; }
             }
             if (dropped + mdropped > 0 && dropped + mdropped < allowed.count) {
                 gp.avoid = guarded; gp.avoid_count = n;
-                if (dropped > 0) fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f)\n", dropped, allowed.count, least);
+                if (dropped > 0) fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", dropped, allowed.count, least, leastt);
                 if (mdropped > 0) fprintf(stderr, "mist: material guard left out %d of %d moves (least %.2f)\n", mdropped, allowed.count, mleast);
             }
         }
