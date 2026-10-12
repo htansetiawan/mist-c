@@ -102,6 +102,34 @@ static double material_risk(const Belief *b, Move m, size_t cap) {
     return total > 0 ? lost / total : 0;
 }
 
+/* Diagnostics (MIST_TRUTH_SEQ: the true boards of the game, one 64-character
+ * string per view in the protocol's order, comma separated): does P hold the
+ * true position after each update, with what weight share and at what rank. */
+static int position_is(const Position *p, const char *board) {
+    for (int sq = 0; sq < 64; ++sq) {
+        const char c = board[sq];
+        if (c == '-') { if (p->piece[sq] != NO_PIECE) return 0; continue; }
+        const char *t = strchr("PNBRQK", c >= 'a' ? c - 32 : c);
+        if (!t || p->piece[sq] != (int)(t - "PNBRQK") || p->color[sq] != (c >= 'a' ? BLACK : WHITE)) return 0;
+    }
+    return 1;
+}
+static void truth_report(const Belief *b, const char *seq, int view_index) {
+    const char *board = seq;
+    for (int i = 0; i < view_index && board; ++i) { board = strchr(board, ','); if (board) ++board; }
+    if (!board || strlen(board) < 64) return;
+    double total = 0, mine = -1; size_t where = 0;
+    for (size_t i = 0; i < b->count; ++i) {
+        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        total += w;
+        if (mine < 0 && position_is(&b->items[i], board)) { mine = w; where = i; }
+    }
+    if (mine < 0) { fprintf(stderr, "mist: truth v=%d |P|=%zu%s LOST\n", view_index, b->count, b->overflowed ? "(capped)" : ""); return; }
+    size_t rank = 1;
+    for (size_t i = 0; i < b->count; ++i) if (i != where && (b->logw ? exp((double)b->logw[i]) : 1.0) > mine) ++rank;
+    fprintf(stderr, "mist: truth v=%d |P|=%zu%s share=%.5f rank=%zu\n", view_index, b->count, b->overflowed ? "(capped)" : "", total > 0 ? mine / total : 0, rank);
+}
+
 /* king_risk on at most `cap` boards of P, evenly strided (weights kept) */
 static double king_risk_capped(const Belief *b, Move m, size_t cap) {
     if (b->count <= cap) return king_risk(b, m);
@@ -161,6 +189,7 @@ int main(void) {
     /* decision replay (tests): our first decisions play these moves (comma
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
+    const char *truth_seq = getenv("MIST_TRUTH_SEQ");
     /* MIST_STOCKFISH=path: Stockfish scores the search's leaves (paper, 3.3) */
     if (getenv("MIST_STOCKFISH") && *getenv("MIST_STOCKFISH"))
         fprintf(stderr, "mist: stockfish %s\n", sf_start(getenv("MIST_STOCKFISH")) ? "ready" : "failed to start; our evaluator scores the leaves");
@@ -202,6 +231,7 @@ int main(void) {
                 const size_t n = belief_resample(&b, view, front.their, front.castle, 2000, 60000);
                 fprintf(stderr, "mist: belief empty, rebuilt %zu positions from the view (rebuild %d)\n", n, ++rebuilds);
             }
+            if (truth_seq && views > 1) truth_report(&b, truth_seq, views - 1);
             moved = 0;
             continue;
         }
@@ -318,9 +348,11 @@ int main(void) {
         }
         long sf_calls; double sf_seconds;
         sf_stats(&sf_calls, &sf_seconds);
-        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f sf=%ld/%.1fs mr=%.2f/%.2f move=%s\n",
+        unsigned long hist_lookups, hist_hits;
+        belief_history_stats(&hist_lookups, &hist_hits);
+        fprintf(stderr, "mist: n=%d |P|=%zu%s samples=%d moves=%d infosets=%d nodes=%d iters=%d p=%.2f v=%+.3f lead=%+d clock=%.1f sf=%ld/%.1fs mr=%.2f/%.2f hist=%lu/%lu move=%s\n",
                 ++decisions, b.count, b.overflowed ? "(capped)" : "", r.samples, r.our_moves, r.opponent_infosets, r.nodes,
-                r.iterations, r.probability, r.value, lead, remaining, sf_calls, sf_seconds, chosen_mrisk, have_mrisk ? mleast : -1.0, uci);
+                r.iterations, r.probability, r.value, lead, remaining, sf_calls, sf_seconds, chosen_mrisk, have_mrisk ? mleast : -1.0, hist_hits, hist_lookups, uci);
         printf("move %s\n", uci); fflush(stdout);
         clock_left = reported - (now_seconds() - view_at) + increment;
         front_play(&front, view, r.move);

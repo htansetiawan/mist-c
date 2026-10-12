@@ -19,6 +19,12 @@ if [ -n "${STOCKFISH:-}" ]; then
     [ -n "${STOCKFISH_LICENSE:-}" ] && cp "$STOCKFISH_LICENSE" "$stage/bin/STOCKFISH-COPYING.txt"
     contents="$contents bin"
 fi
+if [ -n "${HISTORY_TABLE:-}" ]; then
+    # the empirical opponent prior (tools/history_table.c), read by run.sh
+    mkdir -p "$stage/data"
+    cp "$HISTORY_TABLE" "$stage/data/history.bin"
+    contents="$contents data"
+fi
 (cd "$stage" && bash build.sh >/dev/null && printf 'fow\nw 180 2\n' | timeout 10 ./mist | grep -q ready && rm -f mist)
 rm -f "$out"
 (cd "$stage" && zip -qr -9 "$out" $contents)

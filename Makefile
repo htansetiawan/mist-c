@@ -42,3 +42,9 @@ build/mist: $(SRC) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h src/
 clean:
 	rm -rf build
 .PHONY: test clean
+
+build/history_table: $(SRC) tools/history_table.c src/belief.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tools/history_table.c -lm -o $@
+
+build/move_features: $(SRC) tools/move_features.c src/movemodel.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tools/move_features.c -lm -o $@

@@ -2,6 +2,7 @@
 #include "belief.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -163,6 +164,51 @@ static int settings_read = 0, model_on = 1, prune_capturable = 1;
 static float model_temp = 1.0f;
 static size_t model_full_below = 10000;
 
+/* Empirical opponent prior (MIST_HISTORY_TABLE, built by tools/history_table.c):
+ * how often each move followed each information history in the arena, keyed
+ * by the same hash the worlds carry in b->hist. Where the history was seen
+ * MIST_HISTORY_MIN times or more (default 3), a hidden move's probability is
+ * (count + n0 * model) / (N + n0) with n0 = MIST_HISTORY_N0 (default 4): the
+ * bots repeat their openings, and the linear model alone gave 3...Qa5+ in the
+ * Scandinavian 12% against the e-file checks' 88%, which cost four games. */
+typedef struct { uint64_t hash; uint32_t move, count; } HistRec;
+static HistRec *hist_table = NULL;
+static size_t hist_n = 0;
+static float hist_n0 = 4.0f;
+static unsigned hist_min = 3;
+static unsigned long hist_lookups = 0, hist_hits = 0;
+
+static void read_history_table(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "mist: history table %s: cannot open\n", path); return; }
+    char magic[8]; uint32_t version = 0, count = 0;
+    if (fread(magic, 1, 8, f) != 8 || memcmp(magic, "MISTHIST", 8) != 0 || fread(&version, 4, 1, f) != 1 || version != 1 || fread(&count, 4, 1, f) != 1) {
+        fprintf(stderr, "mist: history table %s: bad header\n", path); fclose(f); return;
+    }
+    hist_table = malloc((size_t)count * sizeof(HistRec));
+    if (!hist_table || fread(hist_table, sizeof(HistRec), count, f) != (size_t)count) {
+        fprintf(stderr, "mist: history table %s: short read\n", path); free(hist_table); hist_table = NULL; fclose(f); return;
+    }
+    fclose(f);
+    hist_n = count;
+    fprintf(stderr, "mist: history table %s: %zu records\n", path, hist_n);
+}
+
+/* Counts of the moves of `l` after history `h` into c[]; returns N(h). */
+static unsigned history_counts(uint64_t h, const MoveList *l, unsigned *c) {
+    memset(c, 0, sizeof(unsigned) * (size_t)l->count);
+    size_t lo = 0, hi = hist_n;
+    while (lo < hi) { const size_t mid = lo + (hi - lo) / 2; if (hist_table[mid].hash < h) lo = mid + 1; else hi = mid; }
+    unsigned total = 0;
+    for (size_t i = lo; i < hist_n && hist_table[i].hash == h; ++i) {
+        total += hist_table[i].count;
+        for (int j = 0; j < l->count; ++j) if ((uint32_t)l->moves[j] == hist_table[i].move) { c[j] = hist_table[i].count; break; }
+    }
+    return total;
+}
+
+void belief_history_stats(unsigned long *lookups, unsigned long *hits) { *lookups = hist_lookups; *hits = hist_hits; }
+
 static void read_settings(void) {
     if (settings_read) return;
     settings_read = 1;
@@ -171,6 +217,9 @@ static void read_settings(void) {
     if ((e = getenv("MIST_MODEL_TEMP"))) model_temp = (float)atof(e);
     if ((e = getenv("MIST_MODEL_FULL_BELOW"))) model_full_below = (size_t)strtoull(e, NULL, 10);
     if ((e = getenv("MIST_PRUNE_CAPTURABLE")) && e[0] == '0') prune_capturable = 0;
+    if ((e = getenv("MIST_HISTORY_TABLE")) && *e) read_history_table(e);
+    if ((e = getenv("MIST_HISTORY_N0"))) hist_n0 = (float)atof(e);
+    if ((e = getenv("MIST_HISTORY_MIN"))) hist_min = (unsigned)atoi(e);
 }
 
 /* What a view pins down, as bitboards: necessary conditions checked before the
@@ -238,6 +287,7 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
         MoveList l;
         generate_moves(&p, &l);
         float log_z = 0;
+        unsigned hc[256], N = 0;
         if (model_on) {
             move_logits(&p, &l, b->last_own, full, logit);
             float top = -INFINITY;
@@ -245,6 +295,11 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
             double z = 0;
             for (int j = 0; j < l.count; ++j) z += exp((double)(logit[j] - top));
             log_z = top + (float)log(z);
+            if (hist_table) {
+                ++hist_lookups;
+                N = history_counts(b->hist ? b->hist[i] : 0, &l, hc);
+                if (N < hist_min) N = 0; else ++hist_hits;
+            }
         }
         const float base = b->logw ? b->logw[i] : 0.0f;
         for (int j = 0; j < l.count; ++j) {
@@ -258,7 +313,9 @@ size_t belief_after_opponent(Belief *b, const char view[65]) {
                     cand[n].key = position_key(&p);
                     cand[n].parent = (uint32_t)i;
                     cand[n].move = l.moves[j];
-                    cand[n].logw = base + (model_on ? model_temp * (logit[j] - log_z) : 0.0f);
+                    cand[n].logw = base + (!model_on ? 0.0f : N > 0
+                        ? model_temp * logf(((float)hc[j] + hist_n0 * expf(logit[j] - log_z)) / ((float)N + hist_n0))
+                        : model_temp * (logit[j] - log_z));
                     ++n;
                 }
             }
