@@ -113,14 +113,14 @@ static double material_risk(const Belief *b, Move m, size_t cap) {
  * stood on a square we could not see when we moved, usually a defender of a
  * pawn or piece the queen took, and the search's few sampled worlds held it
  * too rarely. Measured on all of P the defender is there. */
-static void queen_risks(const Belief *b, Move m, size_t cap, double temp, int threshold, double *r1, double *rt) {
+static void queen_risks(const Belief *b, Move m, size_t cap, double temp, int threshold, double *r1, double *rt, double *ru) {
     const size_t stride = b->count > cap ? (b->count + cap - 1) / cap : 1;
-    double t1 = 0, l1 = 0, tt = 0, lt = 0;
+    double t1 = 0, l1 = 0, tt = 0, lt = 0, tu = 0, lu = 0;
     for (size_t i = 0; i < b->count; i += stride) {
         const double lw = b->logw ? (double)b->logw[i] : 0.0;
         const double wt = exp(lw), w1 = exp(lw / temp);
         Position p = b->items[i];
-        t1 += w1; tt += wt;
+        t1 += w1; tt += wt; tu += 1;
         const int to = MOVE_TO(m);
         if (p.piece[to] == KING && p.color[to] != p.side) continue;   /* takes the king: won */
         int got = p.piece[to] != NO_PIECE && p.color[to] != p.side ? piece_pawns[p.piece[to]] : 0;
@@ -141,10 +141,11 @@ static void queen_risks(const Belief *b, Move m, size_t cap, double temp, int th
                 if (gain > best) best = gain;
             }
         }
-        if (best - got >= threshold) { l1 += w1; lt += wt; }
+        if (best - got >= threshold) { l1 += w1; lt += wt; lu += 1; }
     }
     *r1 = t1 > 0 ? l1 / t1 : 0;
     *rt = tt > 0 ? lt / tt : 0;
+    if (ru) *ru = tu > 0 ? lu / tu : 0;
 }
 
 /* Diagnostics (MIST_TRUTH_SEQ: the true boards of the game, one 64-character
@@ -178,20 +179,26 @@ static void truth_report(const Belief *b, const char *seq, int view_index) {
 /* king_risk on at most `cap` boards of P, evenly strided, under the belief's
  * weights (*rt: weight^temp of the fitted model, belief.c) and under the
  * fitted weighting recovered as weight^(1/temp) (*r1) */
-static void king_risks(const Belief *b, Move m, size_t cap, double temp, double *r1, double *rt) {
+/* Three weightings of the strided sample of P: the fitted weights (r1), the
+ * sharper weight^temp the search samples by (rt), and uniform over the
+ * consistent boards (ru, v15): a hidden attacker the move model rates as
+ * implausible still sits on a share of the boards, and four of v13's seven
+ * queen losses as Black had the truth in P at a weight of 0.07% or less. */
+static void king_risks(const Belief *b, Move m, size_t cap, double temp, double *r1, double *rt, double *ru) {
     const size_t stride = b->count > cap ? (b->count + cap - 1) / cap : 1;
-    double t1 = 0, l1 = 0, tt = 0, lt = 0;
+    double t1 = 0, l1 = 0, tt = 0, lt = 0, tu = 0, lu = 0;
     for (size_t i = 0; i < b->count; i += stride) {
         const double lw = b->logw ? (double)b->logw[i] : 0.0;
         const double wt = exp(lw), w1 = exp(lw / temp);
         Position p = b->items[i];
         Undo u;
         make_move(&p, m, &u);
-        t1 += w1; tt += wt;
-        if (mover_left_king_capturable(&p)) { l1 += w1; lt += wt; }
+        t1 += w1; tt += wt; tu += 1;
+        if (mover_left_king_capturable(&p)) { l1 += w1; lt += wt; lu += 1; }
     }
     *r1 = t1 > 0 ? l1 / t1 : 0;
     *rt = tt > 0 ? lt / tt : 0;
+    if (ru) *ru = tu > 0 ? lu / tu : 0;
 }
 
 static double now_seconds(void) {
@@ -259,6 +266,10 @@ int main(void) {
      * A lost queen is worth about nine tenths of a lost game to us (we score
      * 0.01 in those games), so 0.9; a hidden check still outweighs it. */
     const double qweight = getenv("MIST_QUEEN_WEIGHT") ? atof(getenv("MIST_QUEEN_WEIGHT")) : 0.9;
+    /* MIST_GUARD_UNIFORM (v15): a third clause of the guards' rule under the
+     * uniform weighting of P's boards, with its own margin (negative: off).
+     * Coarser than the weighted shares, so its margin is larger. */
+    const double uguard = getenv("MIST_GUARD_UNIFORM") ? atof(getenv("MIST_GUARD_UNIFORM")) : -1.0;
     const int qloss = getenv("MIST_QUEEN_LOSS") ? atoi(getenv("MIST_QUEEN_LOSS")) : 4;
     const size_t qcap = getenv("MIST_QUEEN_CAP") ? (size_t)strtoull(getenv("MIST_QUEEN_CAP"), NULL, 10) : 20000;
     /* decision replay (tests): our first decisions play these moves (comma
@@ -355,13 +366,13 @@ int main(void) {
             for (int i = 0; i < allowed.count; ++i) { mrisk[i] = material_risk(&b, allowed.moves[i], mcap); if (mrisk[i] < mleast) mleast = mrisk[i]; }
             have_mrisk = 1;
         }
-        double qrisk[256] = {0}, qriskt[256] = {0}, qleast = 1, qleastt = 1;
+        double qrisk[256] = {0}, qriskt[256] = {0}, qrisku[256] = {0}, qleast = 1, qleastt = 1;
         int have_qrisk = 0, qout[256];
         memset(qout, 0, sizeof qout);
         const double guards_started = now_seconds();
         if ((qguard >= 0 || getenv("MIST_RISK")) && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
             for (int i = 0; i < allowed.count; ++i) {
-                queen_risks(&b, allowed.moves[i], qcap, guard_temp, qloss, &qrisk[i], &qriskt[i]);
+                queen_risks(&b, allowed.moves[i], qcap, guard_temp, qloss, &qrisk[i], &qriskt[i], &qrisku[i]);
                 if (qrisk[i] < qleast) qleast = qrisk[i];
                 if (qriskt[i] < qleastt) qleastt = qriskt[i];
             }
@@ -381,14 +392,16 @@ int main(void) {
              * through (two 7-9-ply losses). A move is out when it is above
              * the safest under either; if that leaves nothing, under the
              * sharper one alone. guard_temp 1 is the fitted guard only. */
-            double risk[256], riskt[256], least = 1e9, leastt = 1e9, kleast = 1e9, kleastt = 1e9;
-            double krisk[256], kriskt[256];
+            double risk[256], riskt[256], risku[256], least = 1e9, leastt = 1e9, leastu = 1e9, kleast = 1e9, kleastt = 1e9;
+            double krisk[256], kriskt[256], krisku[256];
             for (int i = 0; i < allowed.count; ++i) {
-                king_risks(&b, allowed.moves[i], 20000, guard_temp, &krisk[i], &kriskt[i]);
+                king_risks(&b, allowed.moves[i], 20000, guard_temp, &krisk[i], &kriskt[i], &krisku[i]);
                 risk[i] = krisk[i] + lam * qrisk[i];
                 riskt[i] = kriskt[i] + lam * qriskt[i];
+                risku[i] = krisku[i] + lam * qrisku[i];
                 if (risk[i] < least) least = risk[i];
                 if (riskt[i] < leastt) leastt = riskt[i];
+                if (risku[i] < leastu) leastu = risku[i];
                 if (krisk[i] < kleast) kleast = krisk[i];
                 if (kriskt[i] < kleastt) kleastt = kriskt[i];
             }
@@ -396,7 +409,8 @@ int main(void) {
             for (int pass = 0; pass < 2; ++pass) {
                 dropped = 0;
                 for (int i = 0; i < allowed.count; ++i) {
-                    out[i] = riskt[i] > leastt + guard || (pass == 0 && risk[i] > least + guard);
+                    out[i] = riskt[i] > leastt + guard
+                          || (pass == 0 && (risk[i] > least + guard || (uguard >= 0 && risku[i] > leastu + uguard)));
                     dropped += out[i];
                 }
                 if (dropped < allowed.count) break;
@@ -472,7 +486,7 @@ int main(void) {
         if (getenv("MIST_RISK")) {   /* diagnostics: each allowed move's king, queen and material risk on P */
             for (int i = 0; i < allowed.count; ++i) {
                 char u[6]; move_to_uci(allowed.moves[i], u);
-                fprintf(stderr, "mist: risk %s %.4f qrisk %.3f/%.3f mrisk %.2f%s\n", u, king_risk(&b, allowed.moves[i]), have_qrisk ? qrisk[i] : -1.0, have_qrisk ? qriskt[i] : -1.0, have_mrisk ? mrisk[i] : -1.0, allowed.moves[i] == r.move ? " (chosen)" : "");
+                fprintf(stderr, "mist: risk %s %.4f qrisk %.3f/%.3f/%.3f mrisk %.2f%s\n", u, king_risk(&b, allowed.moves[i]), have_qrisk ? qrisk[i] : -1.0, have_qrisk ? qriskt[i] : -1.0, have_qrisk ? qrisku[i] : -1.0, have_mrisk ? mrisk[i] : -1.0, allowed.moves[i] == r.move ? " (chosen)" : "");
             }
         }
         if (have_qrisk) fprintf(stderr, "mist: queen risk chosen %.3f/%.3f least %.3f/%.3f\n", chosen_qrisk, chosen_qriskt, qleast, qleastt);
