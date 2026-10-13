@@ -250,6 +250,15 @@ int main(void) {
      * times instead of 93 and the loss on the true board fell from 440 to
      * 197 centipawns (worse in 2 decisions, better by 300+ in 36). */
     const double qguard = getenv("MIST_QUEEN_GUARD") ? atof(getenv("MIST_QUEEN_GUARD")) : 0.05;
+    /* MIST_QUEEN_WEIGHT: v14 folds the queen risk into the king guard's rule
+     * as one risk, king + weight x queen, instead of a second guard with its
+     * own margin. v13's separate guard gave the king guard the last word, so
+     * when every queen-saving move carried a few percent of king risk the
+     * queen guard was dropped whole and a certain queen loss was played (v13
+     * as Black: 2.5/12 vs the v34 bytes, 3/10 vs Misty; p3 decision 11).
+     * A lost queen is worth about nine tenths of a lost game to us (we score
+     * 0.01 in those games), so 0.9; a hidden check still outweighs it. */
+    const double qweight = getenv("MIST_QUEEN_WEIGHT") ? atof(getenv("MIST_QUEEN_WEIGHT")) : 0.9;
     const int qloss = getenv("MIST_QUEEN_LOSS") ? atoi(getenv("MIST_QUEEN_LOSS")) : 4;
     const size_t qcap = getenv("MIST_QUEEN_CAP") ? (size_t)strtoull(getenv("MIST_QUEEN_CAP"), NULL, 10) : 20000;
     /* decision replay (tests): our first decisions play these moves (comma
@@ -346,9 +355,10 @@ int main(void) {
             for (int i = 0; i < allowed.count; ++i) { mrisk[i] = material_risk(&b, allowed.moves[i], mcap); if (mrisk[i] < mleast) mleast = mrisk[i]; }
             have_mrisk = 1;
         }
-        double qrisk[256], qriskt[256], qleast = 1, qleastt = 1;
+        double qrisk[256] = {0}, qriskt[256] = {0}, qleast = 1, qleastt = 1;
         int have_qrisk = 0, qout[256];
         memset(qout, 0, sizeof qout);
+        const double guards_started = now_seconds();
         if ((qguard >= 0 || getenv("MIST_RISK")) && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
             for (int i = 0; i < allowed.count; ++i) {
                 queen_risks(&b, allowed.moves[i], qcap, guard_temp, qloss, &qrisk[i], &qriskt[i]);
@@ -356,19 +366,12 @@ int main(void) {
                 if (qriskt[i] < qleastt) qleastt = qriskt[i];
             }
             have_qrisk = 1;
-            if (qguard >= 0) {   /* the king guard's rule: out under either weighting; if that is everything, under the sharper alone */
-                int qdropped = 0;
-                for (int pass = 0; pass < 2; ++pass) {
-                    qdropped = 0;
-                    for (int i = 0; i < allowed.count; ++i) {
-                        qout[i] = qriskt[i] > qleastt + qguard || (pass == 0 && qrisk[i] > qleast + qguard);
-                        qdropped += qout[i];
-                    }
-                    if (qdropped < allowed.count) break;
-                }
-                if (qdropped >= allowed.count) memset(qout, 0, sizeof qout);
-            }
+            if (getenv("MIST_TIMING")) fprintf(stderr, "mist: timing queen guard %.3f s |P| %zu moves %d\n", now_seconds() - guards_started, b.count, allowed.count);
         }
+        /* v14: the queen risk joins the king guard's rule below as one risk
+         * (king + qweight x queen) when the queen guard is on; qout only marks
+         * what the queen added, for the log */
+        const double lam = (qguard >= 0 && have_qrisk) ? qweight : 0.0;
         if (guard >= 0 && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
             /* Two weightings. The fitted one catches a check the belief gives
              * a few percent (the a5 queen check after 1.d4: 3%). The sharper
@@ -378,11 +381,16 @@ int main(void) {
              * through (two 7-9-ply losses). A move is out when it is above
              * the safest under either; if that leaves nothing, under the
              * sharper one alone. guard_temp 1 is the fitted guard only. */
-            double risk[256], riskt[256], least = 1, leastt = 1;
+            double risk[256], riskt[256], least = 1e9, leastt = 1e9, kleast = 1e9, kleastt = 1e9;
+            double krisk[256], kriskt[256];
             for (int i = 0; i < allowed.count; ++i) {
-                king_risks(&b, allowed.moves[i], 20000, guard_temp, &risk[i], &riskt[i]);
+                king_risks(&b, allowed.moves[i], 20000, guard_temp, &krisk[i], &kriskt[i]);
+                risk[i] = krisk[i] + lam * qrisk[i];
+                riskt[i] = kriskt[i] + lam * qriskt[i];
                 if (risk[i] < least) least = risk[i];
                 if (riskt[i] < leastt) leastt = riskt[i];
+                if (krisk[i] < kleast) kleast = krisk[i];
+                if (kriskt[i] < kleastt) kleastt = kriskt[i];
             }
             int out[256], dropped = 0;
             for (int pass = 0; pass < 2; ++pass) {
@@ -395,15 +403,15 @@ int main(void) {
             }
             int n = gp.avoid_count;
             for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
-            int mdropped = 0, qdropped = 0, left = 0;
-            for (int i = 0; i < allowed.count; ++i) left += !out[i] && !qout[i];
-            if (left == 0) memset(qout, 0, sizeof qout);   /* the king guard has the last word */
+            int mdropped = 0, qdropped = 0;
             for (int i = 0; i < allowed.count; ++i) {
+                /* what the queen added: out under the combined risk, not under the king's alone */
+                qout[i] = out[i] && !(kriskt[i] > kleastt + guard || krisk[i] > kleast + guard);
+                qdropped += qout[i];
                 if (out[i]) guarded[n++] = allowed.moves[i];
-                else if (qout[i]) { guarded[n++] = allowed.moves[i]; ++qdropped; }
                 else if (mguard >= 0 && have_mrisk && mrisk[i] > mleast + mguard) { guarded[n++] = allowed.moves[i]; ++mdropped; }
             }
-            if (dropped + qdropped + mdropped > 0 && dropped + qdropped + mdropped < allowed.count) {
+            if (dropped + mdropped > 0 && dropped + mdropped < allowed.count) {
                 gp.avoid = guarded; gp.avoid_count = n;
                 if (dropped > 0) fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", dropped, allowed.count, least, leastt);
                 if (qdropped > 0) fprintf(stderr, "mist: queen guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", qdropped, allowed.count, qleast, qleastt);
