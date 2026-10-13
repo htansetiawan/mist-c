@@ -94,7 +94,13 @@ def run_one(entry):
     mv = chess.Move.from_uci(move)
     res = {"id": entry["game"] + ":" + str(entry["k"]), "kind": entry["kind"], "kinds": entry["kinds"], "safe": entry["safe"],
            "played": entry["played"], "move": move, "repeat": move == entry["played"],
-           "fatal": not king_safe_after(b, mv, col), "guard": "king guard" in out.stderr}
+           "fatal": not king_safe_after(b, mv, col), "guard": "king guard" in out.stderr,
+           "qguard": "queen guard" in out.stderr}
+    qr = [l for l in out.stderr.splitlines() if l.startswith("mist: queen risk chosen")]
+    if qr:
+        m = re.search(r"chosen ([\d.]+)/([\d.]+) least ([\d.]+)/([\d.]+)", qr[-1])
+        if m:
+            res["qrisk"] = [float(x) for x in m.groups()]
     info = [l for l in out.stderr.splitlines() if l.startswith("mist: n=")]
     if info:
         res["info"] = info[-1][6:]
