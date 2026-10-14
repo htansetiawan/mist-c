@@ -269,14 +269,16 @@ int main(void) {
     /* MIST_GUARD_UNIFORM (v15): a third clause of the guards' rule under the
      * uniform weighting of P's boards, with its own margin (negative: off).
      * Coarser than the weighted shares, so its margin is larger. */
-    const double uguard = getenv("MIST_GUARD_UNIFORM") ? atof(getenv("MIST_GUARD_UNIFORM")) : 0.02;
-    /* v16: on by default at 0.02. Suite vs v14 (paired): check 60 -> 58 of
+    const double uguard = getenv("MIST_GUARD_UNIFORM") ? atof(getenv("MIST_GUARD_UNIFORM")) : -1.0;
+    /* v16 tried 0.02 by default. Suite vs v14 (paired): check 60 -> 58 of
      * 300 (fixed 4, broke 2), fatal 48 -> 44 of 99 (fixed 4, broke 0),
-     * material cp 132.6 -> 133.0. v35's two 8-ply arena losses as Black were
+     * material cp 132.6 -> 133.0; v35's two 8-ply arena losses as Black were
      * both a recapture that opened a line from our king to an unseen queen
-     * after an early sortie (Qd3-e3; Qa4) the move model rates implausible:
-     * the truth sat in P at weight 0.0006 and 0.0004. The uniform share
-     * catches the second (one board in 18) and not the first (one in 132). */
+     * after an early sortie (Qd3-e3; Qa4) the move model rates implausible
+     * (truth weight 0.0006 and 0.0004 in P), and the uniform share refuses
+     * the second (one board in 18) but not the first (one in 132). In play
+     * it lost: 16.5/40 vs the v35 bytes (White 10/20, Black 6.5/20), so the
+     * suite's gain is over-caution over a whole game. Withdrawn; off. */
     const int qloss = getenv("MIST_QUEEN_LOSS") ? atoi(getenv("MIST_QUEEN_LOSS")) : 4;
     const size_t qcap = getenv("MIST_QUEEN_CAP") ? (size_t)strtoull(getenv("MIST_QUEEN_CAP"), NULL, 10) : 20000;
     /* decision replay (tests): our first decisions play these moves (comma
