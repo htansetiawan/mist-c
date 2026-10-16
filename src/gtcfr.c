@@ -34,6 +34,44 @@ typedef struct {
 
 #define MAX_WORKERS_BATCH 64   /* picks per round at most; sf workers are at most 8 */
 
+/* Fog hazard (v17, MIST_FOG_HAZARD scale, MIST_FOG_HAZARD_THEM for the
+ * opponent's king; both 0 = off). Stockfish scores a leaf as if both sides saw
+ * the board; in Fog of War a king with open lines into unseen squares is taken
+ * far more often. Measured on 1,446 v33-v35 arena games against the top seven
+ * (positions right after our move; king captured within 4 plies):
+ *             0 lines  1      2      3+
+ *   middle    1.8%     7.3%   17.3%  36.1%
+ *   late      1.7%     4.3%   7.8%   12.0%   (opponent non-pawn material <= 13)
+ * The table below is 2 x (rate - rate with no lines): the drop in expected
+ * value on the [-1, 1] scale. Lines are counted by eval_fog (open rays from
+ * the king whose first empty square is unseen, only for slider kinds the other
+ * side still has). */
+static const double fog_hazard[2][4] = {{0.0, 0.11, 0.31, 0.69}, {0.0, 0.05, 0.12, 0.21}};
+static double fog_scale = -1, fog_scale_them = 0;
+static double fog_penalty(const Position *q, int color) {
+    int fog[2];
+    eval_fog(q, color, fog);
+    const int lines = fog[0] > 3 ? 3 : fog[0];
+    if (!lines) return 0;
+    const bb_t them = q->by_color[color ^ 1];
+    const int heavy = 3 * __builtin_popcountll(them & (q->by_type[KNIGHT] | q->by_type[BISHOP]))
+                    + 5 * __builtin_popcountll(them & q->by_type[ROOK]) + 9 * __builtin_popcountll(them & q->by_type[QUEEN]);
+    return fog_hazard[heavy <= 13][lines];
+}
+static double fog_adjust(const Position *q, int us, double value) {
+    if (fog_scale < 0) {
+        /* 0.5 by default (v17): on the regression suite vs v14, hidden-check
+         * kind 60 -> 58 of 300 (fixed 3, broke 1), fatal kind 48 -> 46 of 99
+         * (fixed 3, broke 1) with cp loss 113 -> 105, material cp 133 -> 129
+         * (fatal 5 -> 4). At 1.0 the material kind worsens (cp 138). */
+        fog_scale = getenv("MIST_FOG_HAZARD") ? atof(getenv("MIST_FOG_HAZARD")) : 0.5;
+        fog_scale_them = getenv("MIST_FOG_HAZARD_THEM") ? atof(getenv("MIST_FOG_HAZARD_THEM")) : 0.0;
+    }
+    if (fog_scale > 0) value -= fog_scale * fog_penalty(q, us);
+    if (fog_scale_them > 0) value += fog_scale_them * fog_penalty(q, us ^ 1);
+    return value < -1 ? -1 : value > 1 ? 1 : value;
+}
+
 static double seconds_since(const struct timespec *t0) {
     struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
     return (t1.tv_sec - t0->tv_sec) + 1e-9 * (t1.tv_nsec - t0->tv_nsec);
@@ -139,6 +177,7 @@ static int build_children_scored(Tree *t, const Position *p, const uint64_t hist
         } else {
             value = evaluate(&q, us);
         }
+        value = fog_adjust(&q, us, value);
         kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, value);
         remember_leaf(t, kids[a], &q, h);
     }
