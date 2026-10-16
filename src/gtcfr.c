@@ -58,8 +58,28 @@ static double fog_penalty(const Position *q, int color) {
                     + 5 * __builtin_popcountll(them & q->by_type[ROOK]) + 9 * __builtin_popcountll(them & q->by_type[QUEEN]);
     return fog_hazard[heavy <= 13][lines];
 }
+/* v18: the king move itself. On the same 1,446 games, after a king move the
+ * capture rate within four plies by fog lines is 2.2/12.8/27.5/46.5% in the
+ * middlegame (other moves 0.7/3.1/10.4/24.5) and 3.9/8.3/14.0/17.0% late
+ * (other moves 1.5/3.3/5.0/7.4): the move walks the king onto squares the
+ * fog attacks. Our king moves 16.6 times per 100 against the top teams' 11.6
+ * (late 13.2 against Greek Gift's 1.8). The table is 2 x (king-move rate -
+ * other-move rate), added to the standing hazard above for a leaf reached by
+ * our king move (MIST_KING_MOVE_HAZARD scale, default 1.0). */
+static const double king_move_hazard[2][4] = {{0.03, 0.19, 0.34, 0.44}, {0.05, 0.10, 0.18, 0.19}};
+static double king_move_scale = -1;
+static double king_move_penalty(const Position *q, int color) {
+    int fog[2];
+    eval_fog(q, color, fog);
+    const int lines = fog[0] > 3 ? 3 : fog[0];
+    const bb_t them = q->by_color[color ^ 1];
+    const int heavy = 3 * __builtin_popcountll(them & (q->by_type[KNIGHT] | q->by_type[BISHOP]))
+                    + 5 * __builtin_popcountll(them & q->by_type[ROOK]) + 9 * __builtin_popcountll(them & q->by_type[QUEEN]);
+    return king_move_hazard[heavy <= 13][lines];
+}
 static double fog_adjust(const Position *q, int us, double value) {
     if (fog_scale < 0) {
+        king_move_scale = getenv("MIST_KING_MOVE_HAZARD") ? atof(getenv("MIST_KING_MOVE_HAZARD")) : 1.0;
         /* 0.5 by default (v17): on the regression suite vs v14, hidden-check
          * kind 60 -> 58 of 300 (fixed 3, broke 1), fatal kind 48 -> 46 of 99
          * (fixed 3, broke 1) with cp loss 113 -> 105, material cp 133 -> 129
@@ -178,6 +198,12 @@ static int build_children_scored(Tree *t, const Position *p, const uint64_t hist
             value = evaluate(&q, us);
         }
         value = fog_adjust(&q, us, value);
+        if (king_move_scale > 0 && p->piece[MOVE_FROM(l.moves[a])] == KING) {
+            /* the mover's king walked: our walk is charged, theirs credited */
+            const double h = king_move_scale * king_move_penalty(&q, mover);
+            value = mover == us ? value - h : value + h;
+            value = value < -1 ? -1 : value > 1 ? 1 : value;
+        }
         kids[a] = game_node(&t->g, NODE_TERMINAL, 0, -1, value);
         remember_leaf(t, kids[a], &q, h);
     }
