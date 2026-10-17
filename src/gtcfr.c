@@ -104,7 +104,7 @@ static double hazard_adjust(const Position *q, const Position *before, Move m, i
 }
 static double fog_adjust(const Position *q, int us, double value) {
     if (fog_scale < 0) {
-        hazard_scale = getenv("MIST_HAZARD") ? atof(getenv("MIST_HAZARD")) : 1.0;
+        hazard_scale = getenv("MIST_HAZARD") ? atof(getenv("MIST_HAZARD")) : 0.0;
         hazard_material = getenv("MIST_HAZARD_MATERIAL") ? atof(getenv("MIST_HAZARD_MATERIAL")) : 0.0;
         king_move_scale = getenv("MIST_KING_MOVE_HAZARD") ? atof(getenv("MIST_KING_MOVE_HAZARD")) : 0.0;
         /* 0.5 by default (v17): on the regression suite vs v14, hidden-check
