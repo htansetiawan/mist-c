@@ -79,7 +79,7 @@ static double king_move_penalty(const Position *q, int color) {
 }
 static double fog_adjust(const Position *q, int us, double value) {
     if (fog_scale < 0) {
-        king_move_scale = getenv("MIST_KING_MOVE_HAZARD") ? atof(getenv("MIST_KING_MOVE_HAZARD")) : 1.0;
+        king_move_scale = getenv("MIST_KING_MOVE_HAZARD") ? atof(getenv("MIST_KING_MOVE_HAZARD")) : 0.0;
         /* 0.5 by default (v17): on the regression suite vs v14, hidden-check
          * kind 60 -> 58 of 300 (fixed 3, broke 1), fatal kind 48 -> 46 of 99
          * (fixed 3, broke 1) with cp loss 113 -> 105, material cp 133 -> 129
