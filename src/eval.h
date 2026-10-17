@@ -16,5 +16,11 @@ double evaluate(const Position *p, int us);
  * piece moving that way), and unseen empty knight squares (if it has
  * knights), as {lines, knight squares}. */
 void eval_fog(const Position *p, int color, int out[2]);
+/* Fitted hazard (v19): features of the position for `color`'s king from its
+ * own view (kingmove, capture: how `color` just moved), and the fitted chance
+ * that within four plies its king is captured (material 0) or it loses 3+
+ * points of material (material 1). */
+void hazard_features(const Position *p, int color, int kingmove, int capture, double x[19]);
+double hazard_prob(const double x[19], int material);
 
 #endif

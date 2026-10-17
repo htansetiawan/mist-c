@@ -77,14 +77,41 @@ static double king_move_penalty(const Position *q, int color) {
                     + 5 * __builtin_popcountll(them & q->by_type[ROOK]) + 9 * __builtin_popcountll(them & q->by_type[QUEEN]);
     return king_move_hazard[heavy <= 13][lines];
 }
+/* v19: the fitted hazard (eval.c hazard_prob) replaces the hand tables when
+ * MIST_HAZARD > 0 (default 1.0): with probability p the mover's king is taken
+ * within four plies, so the leaf is worth (1 - p) * value + p * (-1) for us,
+ * and symmetrically the opponent's king hazard q lifts it toward +1.
+ * MIST_HAZARD_MATERIAL (default 0) charges the fitted chance of losing 3+
+ * points as a swing of that many pawns on the tanh scale. */
+static double hazard_scale = -1, hazard_material = 0;
+static double hazard_adjust(const Position *q, const Position *before, Move m, int mover, int us, double value) {
+    double x[19];
+    const int kingmove = before->piece[MOVE_FROM(m)] == KING;
+    const int capture = before->piece[MOVE_TO(m)] != NO_PIECE || (before->piece[MOVE_FROM(m)] == PAWN && MOVE_TO(m) == before->ep);
+    /* our king, with our move's flags if we moved */
+    hazard_features(q, us, mover == us ? kingmove : 0, mover == us ? capture : 0, x);
+    const double p = hazard_scale * hazard_prob(x, 0);
+    value = (1 - p) * value - p;
+    if (hazard_material > 0) {
+        const double pm = hazard_material * hazard_prob(x, 1);
+        value -= pm * tanh(300.0 / 400.0) * (mover == us ? 1.0 : 0.5);
+    }
+    /* their king, with their move's flags if they moved */
+    hazard_features(q, us ^ 1, mover != us ? kingmove : 0, mover != us ? capture : 0, x);
+    const double pq = hazard_scale * hazard_prob(x, 0);
+    value = (1 - pq) * value + pq;
+    return value < -1 ? -1 : value > 1 ? 1 : value;
+}
 static double fog_adjust(const Position *q, int us, double value) {
     if (fog_scale < 0) {
+        hazard_scale = getenv("MIST_HAZARD") ? atof(getenv("MIST_HAZARD")) : 1.0;
+        hazard_material = getenv("MIST_HAZARD_MATERIAL") ? atof(getenv("MIST_HAZARD_MATERIAL")) : 0.0;
         king_move_scale = getenv("MIST_KING_MOVE_HAZARD") ? atof(getenv("MIST_KING_MOVE_HAZARD")) : 0.0;
         /* 0.5 by default (v17): on the regression suite vs v14, hidden-check
          * kind 60 -> 58 of 300 (fixed 3, broke 1), fatal kind 48 -> 46 of 99
          * (fixed 3, broke 1) with cp loss 113 -> 105, material cp 133 -> 129
          * (fatal 5 -> 4). At 1.0 the material kind worsens (cp 138). */
-        fog_scale = getenv("MIST_FOG_HAZARD") ? atof(getenv("MIST_FOG_HAZARD")) : 0.5;
+        fog_scale = getenv("MIST_FOG_HAZARD") ? atof(getenv("MIST_FOG_HAZARD")) : (hazard_scale > 0 ? 0.0 : 0.5);
         fog_scale_them = getenv("MIST_FOG_HAZARD_THEM") ? atof(getenv("MIST_FOG_HAZARD_THEM")) : 0.0;
     }
     if (fog_scale > 0) value -= fog_scale * fog_penalty(q, us);
@@ -198,6 +225,7 @@ static int build_children_scored(Tree *t, const Position *p, const uint64_t hist
             value = evaluate(&q, us);
         }
         value = fog_adjust(&q, us, value);
+        if (hazard_scale > 0) value = hazard_adjust(&q, p, l.moves[a], mover, us, value);
         if (king_move_scale > 0 && p->piece[MOVE_FROM(l.moves[a])] == KING) {
             /* the mover's king walked: our walk is charged, theirs credited */
             const double h = king_move_scale * king_move_penalty(&q, mover);

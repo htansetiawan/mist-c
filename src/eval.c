@@ -97,6 +97,74 @@ void eval_fog(const Position *p, int color, int out[2]) {
  * 65%, the same mean risk) and changed 60% of quiet moves against 44%. */
 static int fog_line_cp = -1, fog_knight_cp = 0;
 
+/* Fitted hazard (v19). Logistic models of what happens to the mover within
+ * four plies of a position, fitted by tools/fit_hazard.py on 5,928 arena games
+ * of all teams (466,001 positions after a move, the immediately capturable
+ * king excluded): the king is captured (2.42% base rate; gain 0.019 nats; the
+ * top decile predicts 12.1% and sees 12.3%) and 3+ points of material are lost
+ * (8.90%; gain 0.039 nats). Features from the mover's own view of the board. */
+static const double kHazardKing[19] = {-4.373, 0.870, 1.446, 1.576, -0.116, -0.124, -0.419, -0.465, 0.689, -0.016,
+                                       0.192, -0.373, 0.035, 0.842, -0.152, 0.169, 0.0, 0.182, 0.332};
+static const double kHazardMaterial[19] = {-2.460, -0.003, 0.103, 0.071, -0.672, 0.200, 0.029, -0.038, -0.422, 0.020,
+                                           0.079, -0.065, 0.267, -0.437, -0.132, 1.883, 0.0, 0.071, 0.118};
+
+void hazard_features(const Position *p, int color, int kingmove, int capture, double x[19]) {
+    for (int i = 0; i < 19; ++i) x[i] = 0;
+    x[0] = 1;
+    const int k = king_square(p, color);
+    if (k < 0) return;
+    const int them = color ^ 1;
+    const bb_t theirs = p->by_color[them];
+    const int straight_kind = (theirs & (p->by_type[ROOK] | p->by_type[QUEEN])) != 0;
+    const int diagonal_kind = (theirs & (p->by_type[BISHOP] | p->by_type[QUEEN])) != 0;
+    const bb_t seen = visible_squares(p, color);
+    static const int df[8] = {1, -1, 0, 0, 1, 1, -1, -1}, dr[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+    int straight = 0, diag = 0;
+    for (int d = 0; d < 8; ++d) {
+        if (d < 4 ? !straight_kind : !diagonal_kind) continue;
+        for (int f = k % 8 + df[d], r = k / 8 + dr[d]; f >= 0 && f < 8 && r >= 0 && r < 8; f += df[d], r += dr[d]) {
+            const int sq = r * 8 + f;
+            if (p->piece[sq] != NO_PIECE) break;
+            if (!(seen & ((bb_t)1 << sq))) { if (d < 4) ++straight; else ++diag; break; }
+        }
+    }
+    const int L = straight + diag > 3 ? 3 : straight + diag;
+    int heavy = 0;
+    for (int t = KNIGHT; t <= QUEEN; ++t) heavy += kValue[t] / 100 * __builtin_popcountll(theirs & p->by_type[t]);
+    const double late = heavy <= 13 ? 1.0 : 0.0;
+    int knight_unseen = 0;
+    if (theirs & p->by_type[KNIGHT]) {
+        static const int nf[8] = {1, 2, 2, 1, -1, -2, -2, -1}, nr[8] = {2, 1, -1, -2, -2, -1, 1, 2};
+        for (int j = 0; j < 8; ++j) {
+            const int f = k % 8 + nf[j], r = k / 8 + nr[j];
+            if (f < 0 || f > 7 || r < 0 || r > 7) continue;
+            if (!(seen & ((bb_t)1 << (r * 8 + f)))) ++knight_unseen;
+        }
+    }
+    int shelter = 0;
+    for (int ddf = -1; ddf <= 1; ++ddf) for (int ddr = -1; ddr <= 1; ++ddr) {
+        if (!ddf && !ddr) continue;
+        const int f = k % 8 + ddf, r = k / 8 + ddr;
+        if (f < 0 || f > 7 || r < 0 || r > 7) continue;
+        const int sq = r * 8 + f;
+        if (p->piece[sq] != NO_PIECE && p->color[sq] == color) ++shelter;
+    }
+    const int edge = (k % 8 == 0 || k % 8 == 7 || k / 8 == 0 || k / 8 == 7);
+    const bb_t oq = theirs & p->by_type[QUEEN];
+    const int oppq_unseen = oq && !(oq & seen);
+    x[1] = L == 1; x[2] = L == 2; x[3] = L == 3; x[4] = late;
+    x[5] = late * (L == 1); x[6] = late * (L == 2); x[7] = late * (L == 3);
+    x[8] = kingmove; x[9] = kingmove * L; x[10] = knight_unseen; x[11] = shelter; x[12] = edge;
+    x[13] = oppq_unseen; x[14] = heavy / 10.0; x[15] = capture; x[16] = 0; x[17] = diag; x[18] = straight;
+}
+
+double hazard_prob(const double x[19], int material) {
+    const double *w = material ? kHazardMaterial : kHazardKing;
+    double z = 0;
+    for (int i = 0; i < 19; ++i) z += w[i] * x[i];
+    return 1.0 / (1.0 + exp(-z));
+}
+
 static void read_fog_settings(void) {
     fog_line_cp = getenv("MIST_FOG_LINE") ? atoi(getenv("MIST_FOG_LINE")) : 0;
     fog_knight_cp = getenv("MIST_FOG_KNIGHT") ? atoi(getenv("MIST_FOG_KNIGHT")) : 0;
