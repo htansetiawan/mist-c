@@ -148,6 +148,70 @@ static void queen_risks(const Belief *b, Move m, size_t cap, double temp, int th
     if (ru) *ru = tu > 0 ? lu / tu : 0;
 }
 
+/* Piece guard (v20). As queen_risks, for our rooks, bishops and knights: the
+ * share of P (strided to `cap`, the same two weightings) on which, after `m`,
+ * the opponent's best capture of one of them nets `threshold` pawns or more:
+ * the piece less the capturer where we can take it back, less what `m` itself
+ * took. The three terms partition the worlds: one where `m` takes the king is
+ * won; one where `m` leaves our king capturable is the king guard's; one
+ * where the queen can be taken for `queen_threshold` or more net is the queen
+ * term's and is not counted here even if a rook or minor also hangs on it;
+ * the piece term counts only the remaining worlds. So the combined risk is a
+ * weighted share of disjoint world events, never above 1 on any world. In
+ * v35's games against the top six 54% became queen trades that we then lost
+ * on material (scored 0.20-0.28): the guard covered the king and the queen,
+ * and a rook or minor left to an unseen attacker was the search's few sampled
+ * worlds' business. Measured on all of P the attacker is there. */
+static int best_capture_net(const Position *p, int sq, int us, MoveList *l, int *generated) {
+    /* the opponent's best net for taking our piece on `sq` (0 if it is not attacked) */
+    if (!is_attacked(p, sq, p->side)) return 0;
+    if (!*generated) { generate_moves(p, l); *generated = 1; }
+    int best = 0;
+    for (int j = 0; j < l->count; ++j) {
+        if (MOVE_TO(l->moves[j]) != sq) continue;
+        int gain = piece_pawns[p->piece[sq]];
+        Position q = *p; Undo v; make_move(&q, l->moves[j], &v);
+        if (is_attacked(&q, sq, us)) gain -= piece_pawns[p->piece[MOVE_FROM(l->moves[j])]];
+        if (gain > best) best = gain;
+    }
+    return best;
+}
+static void piece_risks(const Belief *b, Move m, size_t cap, double temp, int threshold, int queen_threshold, double *r1, double *rt, double *ru) {
+    const size_t stride = b->count > cap ? (b->count + cap - 1) / cap : 1;
+    double t1 = 0, l1 = 0, tt = 0, lt = 0, tu = 0, lu = 0;
+    for (size_t i = 0; i < b->count; i += stride) {
+        const double lw = b->logw ? (double)b->logw[i] : 0.0;
+        const double wt = exp(lw), w1 = exp(lw / temp);
+        Position p = b->items[i];
+        t1 += w1; tt += wt; tu += 1;
+        const int to = MOVE_TO(m);
+        if (p.piece[to] == KING && p.color[to] != p.side) continue;   /* takes the king: won */
+        int got = p.piece[to] != NO_PIECE && p.color[to] != p.side ? piece_pawns[p.piece[to]] : 0;
+        if (!got && p.piece[MOVE_FROM(m)] == PAWN && to == p.ep) got = 1;
+        Undo u;
+        make_move(&p, m, &u);
+        if (mover_left_king_capturable(&p)) continue;
+        const int us = p.side ^ 1;
+        int best = 0, generated = 0, queens = 0;
+        MoveList l;
+        for (int sq = 0; sq < 64 && !queens; ++sq)   /* the queen term's world: not counted here */
+            if (p.piece[sq] == QUEEN && p.color[sq] == us && best_capture_net(&p, sq, us, &l, &generated) - got >= queen_threshold) queens = 1;
+        if (queens) continue;
+        for (int sq = 0; sq < 64; ++sq) {
+            const int pc = p.piece[sq];
+            if ((pc != ROOK && pc != BISHOP && pc != KNIGHT) || p.color[sq] != us) continue;
+            /* this piece cannot carry the net past the threshold, or past the best seen */
+            if (piece_pawns[pc] - got < threshold || piece_pawns[pc] <= best) continue;
+            const int net = best_capture_net(&p, sq, us, &l, &generated);
+            if (net > best) best = net;
+        }
+        if (best - got >= threshold) { l1 += w1; lt += wt; lu += 1; }
+    }
+    *r1 = t1 > 0 ? l1 / t1 : 0;
+    *rt = tt > 0 ? lt / tt : 0;
+    if (ru) *ru = tu > 0 ? lu / tu : 0;
+}
+
 /* Diagnostics (MIST_TRUTH_SEQ: the true boards of the game, one 64-character
  * string per view in the protocol's order, comma separated): does P hold the
  * true position after each update, with what weight share and at what rank. */
@@ -281,6 +345,16 @@ int main(void) {
      * suite's gain is over-caution over a whole game. Withdrawn; off. */
     const int qloss = getenv("MIST_QUEEN_LOSS") ? atoi(getenv("MIST_QUEEN_LOSS")) : 4;
     const size_t qcap = getenv("MIST_QUEEN_CAP") ? (size_t)strtoull(getenv("MIST_QUEEN_CAP"), NULL, 10) : 20000;
+    /* MIST_PIECE_GUARD (v20): a third term of the combined risk, lambda x the
+     * share of P on which the move loses a rook, bishop or knight outright
+     * (piece_risks; negative: off). MIST_PIECE_LOSS: the net pawns that count
+     * as losing it (3: a clean minor or better; a plain exchange nets 2 and
+     * does not count). MIST_PIECE_CAP: boards of P measured. lambda is fitted
+     * from our score against the top six after a clean rook or minor loss,
+     * relative to the queen's 0.9; off until the candidate ships. */
+    const double pguard = getenv("MIST_PIECE_GUARD") ? atof(getenv("MIST_PIECE_GUARD")) : -1.0;
+    const int ploss = getenv("MIST_PIECE_LOSS") ? atoi(getenv("MIST_PIECE_LOSS")) : 3;
+    const size_t pcap = getenv("MIST_PIECE_CAP") ? (size_t)strtoull(getenv("MIST_PIECE_CAP"), NULL, 10) : 20000;
     /* decision replay (tests): our first decisions play these moves (comma
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
@@ -388,10 +462,24 @@ int main(void) {
             have_qrisk = 1;
             if (getenv("MIST_TIMING")) fprintf(stderr, "mist: timing queen guard %.3f s |P| %zu moves %d\n", now_seconds() - guards_started, b.count, allowed.count);
         }
+        double prisk[256] = {0}, priskt[256] = {0}, prisku[256] = {0}, pleast = 1, pleastt = 1;
+        int have_prisk = 0;
+        if ((pguard >= 0 || getenv("MIST_RISK")) && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
+            const double started = now_seconds();
+            for (int i = 0; i < allowed.count; ++i) {
+                piece_risks(&b, allowed.moves[i], pcap, guard_temp, ploss, qloss, &prisk[i], &priskt[i], &prisku[i]);
+                if (prisk[i] < pleast) pleast = prisk[i];
+                if (priskt[i] < pleastt) pleastt = priskt[i];
+            }
+            have_prisk = 1;
+            if (getenv("MIST_TIMING")) fprintf(stderr, "mist: timing piece guard %.3f s |P| %zu moves %d\n", now_seconds() - started, b.count, allowed.count);
+        }
         /* v14: the queen risk joins the king guard's rule below as one risk
          * (king + qweight x queen) when the queen guard is on; qout only marks
          * what the queen added, for the log */
         const double lam = (qguard >= 0 && have_qrisk) ? qweight : 0.0;
+        /* v20: the piece risk joins the same rule as a third term, lamp x piece */
+        const double lamp = (pguard >= 0 && have_prisk) ? pguard : 0.0;
         if (guard >= 0 && b.count > 0 && allowed.count > 1 && !(forced && *forced)) {
             /* Two weightings. The fitted one catches a check the belief gives
              * a few percent (the a5 queen check after 1.d4: 3%). The sharper
@@ -403,16 +491,21 @@ int main(void) {
              * sharper one alone. guard_temp 1 is the fitted guard only. */
             double risk[256], riskt[256], risku[256], least = 1e9, leastt = 1e9, leastu = 1e9, kleast = 1e9, kleastt = 1e9;
             double krisk[256], kriskt[256], krisku[256];
+            double rkq[256], rkqt[256], kqleast = 1e9, kqleastt = 1e9;   /* king + queen only, for the log */
             for (int i = 0; i < allowed.count; ++i) {
                 king_risks(&b, allowed.moves[i], 20000, guard_temp, &krisk[i], &kriskt[i], &krisku[i]);
-                risk[i] = krisk[i] + lam * qrisk[i];
-                riskt[i] = kriskt[i] + lam * qriskt[i];
-                risku[i] = krisku[i] + lam * qrisku[i];
+                rkq[i] = krisk[i] + lam * qrisk[i];
+                rkqt[i] = kriskt[i] + lam * qriskt[i];
+                risk[i] = rkq[i] + lamp * prisk[i];
+                riskt[i] = rkqt[i] + lamp * priskt[i];
+                risku[i] = krisku[i] + lam * qrisku[i] + lamp * prisku[i];
                 if (risk[i] < least) least = risk[i];
                 if (riskt[i] < leastt) leastt = riskt[i];
                 if (risku[i] < leastu) leastu = risku[i];
                 if (krisk[i] < kleast) kleast = krisk[i];
                 if (kriskt[i] < kleastt) kleastt = kriskt[i];
+                if (rkq[i] < kqleast) kqleast = rkq[i];
+                if (rkqt[i] < kqleastt) kqleastt = rkqt[i];
             }
             int out[256], dropped = 0;
             for (int pass = 0; pass < 2; ++pass) {
@@ -426,11 +519,19 @@ int main(void) {
             }
             int n = gp.avoid_count;
             for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
-            int mdropped = 0, qdropped = 0;
+            int mdropped = 0, qdropped = 0, pdropped = 0;
             for (int i = 0; i < allowed.count; ++i) {
-                /* what the queen added: out under the combined risk, not under the king's alone */
-                qout[i] = out[i] && !(kriskt[i] > kleastt + guard || krisk[i] > kleast + guard);
+                /* what the queen added: out under king + queen, not under the king's alone;
+                 * what the piece term added: out under all three, not under king + queen */
+                const int kout = kriskt[i] > kleastt + guard || krisk[i] > kleast + guard;
+                const int kqout = rkqt[i] > kqleastt + guard || rkq[i] > kqleast + guard;
+                qout[i] = kqout && !kout;
                 qdropped += qout[i];
+                if (out[i] && !kqout) {   /* the piece term's own vetoes, by name, for the calibration replays */
+                    char u[6]; move_to_uci(allowed.moves[i], u);
+                    fprintf(stderr, "mist: piece veto %s\n", u);
+                    ++pdropped;
+                }
                 if (out[i]) guarded[n++] = allowed.moves[i];
                 else if (mguard >= 0 && have_mrisk && mrisk[i] > mleast + mguard) { guarded[n++] = allowed.moves[i]; ++mdropped; }
             }
@@ -438,6 +539,7 @@ int main(void) {
                 gp.avoid = guarded; gp.avoid_count = n;
                 if (dropped > 0) fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", dropped, allowed.count, least, leastt);
                 if (qdropped > 0) fprintf(stderr, "mist: queen guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", qdropped, allowed.count, qleast, qleastt);
+                if (pdropped > 0) fprintf(stderr, "mist: piece guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", pdropped, allowed.count, pleast, pleastt);
                 if (mdropped > 0) fprintf(stderr, "mist: material guard left out %d of %d moves (least %.2f)\n", mdropped, allowed.count, mleast);
             }
         }

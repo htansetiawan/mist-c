@@ -95,7 +95,8 @@ def run_one(entry):
     res = {"id": entry["game"] + ":" + str(entry["k"]), "kind": entry["kind"], "kinds": entry["kinds"], "safe": entry["safe"],
            "played": entry["played"], "move": move, "repeat": move == entry["played"],
            "fatal": not king_safe_after(b, mv, col), "guard": "king guard" in out.stderr,
-           "qguard": "queen guard" in out.stderr}
+           "qguard": "queen guard" in out.stderr, "pguard": "piece guard" in out.stderr,
+           "pveto_played": any(l.strip() == f"mist: piece veto {entry['played']}" for l in out.stderr.splitlines())}
     qr = [l for l in out.stderr.splitlines() if l.startswith("mist: queen risk chosen")]
     if qr:
         m = re.search(r"chosen ([\d.]+)/([\d.]+) least ([\d.]+)/([\d.]+)", qr[-1])

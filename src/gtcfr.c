@@ -107,11 +107,14 @@ static double fog_adjust(const Position *q, int us, double value) {
         hazard_scale = getenv("MIST_HAZARD") ? atof(getenv("MIST_HAZARD")) : 0.0;
         hazard_material = getenv("MIST_HAZARD_MATERIAL") ? atof(getenv("MIST_HAZARD_MATERIAL")) : 0.0;
         king_move_scale = getenv("MIST_KING_MOVE_HAZARD") ? atof(getenv("MIST_KING_MOVE_HAZARD")) : 0.0;
-        /* 0.5 by default (v17): on the regression suite vs v14, hidden-check
-         * kind 60 -> 58 of 300 (fixed 3, broke 1), fatal kind 48 -> 46 of 99
-         * (fixed 3, broke 1) with cp loss 113 -> 105, material cp 133 -> 129
-         * (fatal 5 -> 4). At 1.0 the material kind worsens (cp 138). */
-        fog_scale = getenv("MIST_FOG_HAZARD") ? atof(getenv("MIST_FOG_HAZARD")) : (hazard_scale > 0 ? 0.0 : 0.5);
+        /* v17 tried 0.5 by default: on the regression suite vs v14, hidden-
+         * check kind 60 -> 58 of 300 (fixed 3, broke 1), fatal kind 48 -> 46
+         * of 99 (fixed 3, broke 1) with cp loss 113 -> 105, material cp
+         * 133 -> 129 (fatal 5 -> 4); at 1.0 the material kind worsens (cp
+         * 138); in play 19.5/40 vs the v34 bytes, never shown better. Off
+         * since v20 so that main's defaults are the deployed v35's and a
+         * candidate differs from v35 only by its own knob. */
+        fog_scale = getenv("MIST_FOG_HAZARD") ? atof(getenv("MIST_FOG_HAZARD")) : 0.0;
         fog_scale_them = getenv("MIST_FOG_HAZARD_THEM") ? atof(getenv("MIST_FOG_HAZARD_THEM")) : 0.0;
     }
     if (fog_scale > 0) value -= fog_scale * fog_penalty(q, us);
