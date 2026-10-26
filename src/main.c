@@ -507,15 +507,41 @@ int main(void) {
                 if (rkq[i] < kqleast) kqleast = rkq[i];
                 if (rkqt[i] < kqleastt) kqleastt = rkqt[i];
             }
-            int out[256], dropped = 0;
+            /* v35's rule first, on king + queen: a move it leaves out stays out */
+            int kqout[256], out[256], dropped = 0, kqdropped = 0;
+            double rkqu[256], kquleast = 1e9;
+            for (int i = 0; i < allowed.count; ++i) { rkqu[i] = krisku[i] + lam * qrisku[i]; if (rkqu[i] < kquleast) kquleast = rkqu[i]; }
             for (int pass = 0; pass < 2; ++pass) {
-                dropped = 0;
+                kqdropped = 0;
                 for (int i = 0; i < allowed.count; ++i) {
-                    out[i] = riskt[i] > leastt + guard
-                          || (pass == 0 && (risk[i] > least + guard || (uguard >= 0 && risku[i] > leastu + uguard)));
-                    dropped += out[i];
+                    kqout[i] = rkqt[i] > kqleastt + guard
+                             || (pass == 0 && (rkq[i] > kqleast + guard || (uguard >= 0 && rkqu[i] > kquleast + uguard)));
+                    kqdropped += kqout[i];
                 }
-                if (dropped < allowed.count) break;
+                if (kqdropped < allowed.count) break;
+            }
+            /* v20: the piece term only narrows among v35's survivors. Measured
+             * against all moves it brought back a 5.7% king risk for a piece
+             * risk (out-of-sample 05i9doxr:22, 26 Oct): a lost king is the
+             * game, a lost piece is not. With the piece term off this is v35. */
+            for (int i = 0; i < allowed.count; ++i) out[i] = kqout[i];
+            dropped = kqdropped;
+            if (lamp > 0) {
+                least = leastt = leastu = 1e9;
+                for (int i = 0; i < allowed.count; ++i) if (!kqout[i]) {
+                    if (risk[i] < least) least = risk[i];
+                    if (riskt[i] < leastt) leastt = riskt[i];
+                    if (risku[i] < leastu) leastu = risku[i];
+                }
+                for (int pass = 0; pass < 2; ++pass) {
+                    dropped = 0;
+                    for (int i = 0; i < allowed.count; ++i) {
+                        out[i] = kqout[i] || riskt[i] > leastt + guard
+                              || (pass == 0 && (risk[i] > least + guard || (uguard >= 0 && risku[i] > leastu + uguard)));
+                        dropped += out[i];
+                    }
+                    if (dropped < allowed.count) break;
+                }
             }
             int n = gp.avoid_count;
             for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
@@ -524,10 +550,9 @@ int main(void) {
                 /* what the queen added: out under king + queen, not under the king's alone;
                  * what the piece term added: out under all three, not under king + queen */
                 const int kout = kriskt[i] > kleastt + guard || krisk[i] > kleast + guard;
-                const int kqout = rkqt[i] > kqleastt + guard || rkq[i] > kqleast + guard;
-                qout[i] = kqout && !kout;
+                qout[i] = kqout[i] && !kout;
                 qdropped += qout[i];
-                if (out[i] && !kqout) {   /* the piece term's own vetoes, by name, for the calibration replays */
+                if (out[i] && !kqout[i]) {   /* the piece term's own vetoes, by name, for the calibration replays */
                     char u[6]; move_to_uci(allowed.moves[i], u);
                     fprintf(stderr, "mist: piece veto %s\n", u);
                     ++pdropped;
