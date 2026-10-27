@@ -15,7 +15,7 @@ static int t_sq(const char *name) { return (name[0] - 'a') + 8 * (name[1] - '1')
 static int t_at(const char *name) { const int sq = t_sq(name); return t_us == WHITE ? sq : sq ^ 56; }
 static Move t_mv(const char *uci) { return MAKE_MOVE(t_at(uci), t_at(uci + 2), NO_PIECE); }
 static char t_piece(char c) { return t_us == WHITE ? c : (char)(c >= 'a' ? c - 32 : c + 32); }
-static void t_setup(Position *p, const char *placements) {
+static void t_setup_ep(Position *p, const char *placements, const char *ep) {
     char board[65]; memset(board, '-', 64); board[64] = '\0';
     for (const char *s = placements; *s; ) {
         while (*s == ' ') ++s;
@@ -23,8 +23,9 @@ static void t_setup(Position *p, const char *placements) {
         board[t_at(s + 1)] = t_piece(s[0]);
         s += 3;
     }
-    pos_from_board_string(p, board, t_us, 0, -1);
+    pos_from_board_string(p, board, t_us, 0, ep ? t_at(ep) : -1);
 }
+static void t_setup(Position *p, const char *placements) { t_setup_ep(p, placements, NULL); }
 static unsigned long long t_next(unsigned long long *s) { *s += 0x9e3779b97f4a7c15ULL; unsigned long long z = *s; z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL; z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL; return z ^ (z >> 31); }
 static double t_unit(unsigned long long *s) { return (double)(t_next(s) >> 11) / 9007199254740992.0; }
 
@@ -122,9 +123,46 @@ static void risk_tests(void) {
     CHECK(l.count > 20 && disjoint, "king, queen and piece shares are of disjoint events on every move");
 }
 
+/* Move accounting at the edges of the risk routines (test-only fixtures, as
+ * Astra's review asked): taking the opponent's king, en passant, promotion. */
+static void edge_tests(void) {
+    Belief b; memset(&b, 0, sizeof b);
+    Position w; b.items = &w; b.count = 1; b.us = t_us;
+    double k1, kt, ku, q1, qt, qu, p1, pt, pu;
+    const double eps = 1e-9;
+    /* 1. taking the opponent's king is the won world: no king, queen or piece event is charged, even
+     *    though our rook would then hang to the bishop and our queen to the other rook */
+    t_setup(&w, "Kg1 Qd4 Rh1 kh8 bf6 ra4");
+    king_risks(&b, t_mv("h1h8"), 20000, 2.0, &k1, &kt, &ku);
+    queen_risks(&b, t_mv("h1h8"), 20000, 2.0, 4, &q1, &qt, &qu);
+    piece_risks(&b, t_mv("h1h8"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    CHECK(fabs(k1) < eps && fabs(q1) < eps && fabs(p1) < eps, "taking the king charges no king, queen or piece event");
+    /* 2. en passant: the captured pawn credits one pawn, which takes a would-be net-3 minor loss
+     *    below the threshold (knight c3 hangs to the bishop b4 with no recapture) */
+    t_setup_ep(&w, "Ke1 Nc3 Pe5 ke8 pd5 bb4", "d6");
+    piece_risks(&b, t_mv("e5e6"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    CHECK(fabs(p1 - 1.0) < eps, "the pawn push leaves the knight hanging for 3: a piece event");
+    piece_risks(&b, t_mv("e5d6"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    CHECK(fabs(p1) < eps, "the en-passant capture credits the taken pawn: net 2, no piece event");
+    king_risks(&b, t_mv("e5d6"), 20000, 2.0, &k1, &kt, &ku);
+    CHECK(fabs(k1) < eps, "en passant leaves the king covered (the knight still blocks b4-e1)");
+    /* 3. promotion: make_move puts the promoted queen on the eighth rank; the risk routines then see it.
+     *    The routines credit captures only, not the promotion's own material gain: a new queen taken
+     *    at once by the rook a8 is charged as a queen loss of 9 (the queen's world; not the piece's) */
+    t_setup(&w, "Kg1 Pe7 kh6 ra8");
+    {
+        Position q = w; Undo u; make_move(&q, MAKE_MOVE(t_at("e7"), t_at("e8"), QUEEN), &u);
+        CHECK(q.piece[t_at("e8")] == QUEEN && q.color[t_at("e8")] == t_us && q.piece[t_at("e7")] == NO_PIECE, "promotion puts our queen on e8");
+    }
+    queen_risks(&b, MAKE_MOVE(t_at("e7"), t_at("e8"), QUEEN), 20000, 2.0, 4, &q1, &qt, &qu);
+    piece_risks(&b, MAKE_MOVE(t_at("e7"), t_at("e8"), QUEEN), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    king_risks(&b, MAKE_MOVE(t_at("e7"), t_at("e8"), QUEEN), 20000, 2.0, &k1, &kt, &ku);
+    CHECK(fabs(q1 - 1.0) < eps && fabs(p1) < eps && fabs(k1) < eps, "a promoted queen taken at once is the queen term's event (captures credited, promotion gain not)");
+}
+
 int main(void) {
     fow_init();
-    for (t_us = WHITE; t_us <= BLACK; ++t_us) { rule_tests(); risk_tests(); printf("%s: done\n", t_us == WHITE ? "as White" : "as Black"); }
+    for (t_us = WHITE; t_us <= BLACK; ++t_us) { rule_tests(); risk_tests(); edge_tests(); printf("%s: done\n", t_us == WHITE ? "as White" : "as Black"); }
     if (failures) { printf("test_rule: %d failures\n", failures); return 1; }
     printf("test_rule: passed\n");
     return 0;
