@@ -289,6 +289,84 @@ static double move_budget(double remaining, double increment, double max_seconds
     return budget;
 }
 
+typedef struct {
+    double least, leastt, leastu;   /* least combined risk under the fitted, sharpened and uniform
+                                       weightings (over v35's survivors when the piece term is on) */
+    double kleast, kleastt;         /* least king risk, fitted and sharpened */
+    double kqleast, kqleastt;       /* least king + queen risk */
+    int dropped, kqdropped;         /* moves out under the whole rule; under v35's king + queen rule */
+} GuardStats;
+
+/* The root guard rule on per-move risks (count moves; fitted, sharpened and
+ * uniform weightings of the king, queen and piece shares). out[i] = 1 leaves
+ * move i out; kqout[i] = 1 is v35's verdict on king + lam x queen alone.
+ * Two weightings: the fitted one catches a check the belief gives a few
+ * percent (the a5 queen check after 1.d4: 3%); the sharper one (weight^temp)
+ * keeps only the moves safe where the belief is concentrated. A move is out
+ * when it is above the safest under either; if that leaves nothing, under the
+ * sharper one alone. v35's rule runs first on king + queen; the piece term
+ * (lamp > 0) then only narrows among its survivors, so the allowed set is a
+ * subset of v35's: measured against all moves it brought back a 5.7% king
+ * risk for a piece risk (05i9doxr:22, 26 Oct). With lamp 0 this is v35. */
+static void guard_rule(int count,
+                       const double *krisk, const double *kriskt, const double *krisku,
+                       const double *qrisk, const double *qriskt, const double *qrisku,
+                       const double *prisk, const double *priskt, const double *prisku,
+                       double lam, double lamp, double guard, double uguard,
+                       int *out, int *kqout, GuardStats *st) {
+    double risk[256], riskt[256], risku[256], rkq[256], rkqt[256], rkqu[256];
+    double least = 1e9, leastt = 1e9, leastu = 1e9, kleast = 1e9, kleastt = 1e9, kqleast = 1e9, kqleastt = 1e9, kquleast = 1e9;
+    for (int i = 0; i < count; ++i) {
+        rkq[i] = krisk[i] + lam * qrisk[i];
+        rkqt[i] = kriskt[i] + lam * qriskt[i];
+        rkqu[i] = krisku[i] + lam * qrisku[i];
+        risk[i] = rkq[i] + lamp * prisk[i];
+        riskt[i] = rkqt[i] + lamp * priskt[i];
+        risku[i] = rkqu[i] + lamp * prisku[i];
+        if (risk[i] < least) least = risk[i];
+        if (riskt[i] < leastt) leastt = riskt[i];
+        if (risku[i] < leastu) leastu = risku[i];
+        if (krisk[i] < kleast) kleast = krisk[i];
+        if (kriskt[i] < kleastt) kleastt = kriskt[i];
+        if (rkq[i] < kqleast) kqleast = rkq[i];
+        if (rkqt[i] < kqleastt) kqleastt = rkqt[i];
+        if (rkqu[i] < kquleast) kquleast = rkqu[i];
+    }
+    /* v35's rule first, on king + queen: a move it leaves out stays out */
+    int dropped = 0, kqdropped = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        kqdropped = 0;
+        for (int i = 0; i < count; ++i) {
+            kqout[i] = rkqt[i] > kqleastt + guard
+                     || (pass == 0 && (rkq[i] > kqleast + guard || (uguard >= 0 && rkqu[i] > kquleast + uguard)));
+            kqdropped += kqout[i];
+        }
+        if (kqdropped < count) break;
+    }
+    for (int i = 0; i < count; ++i) out[i] = kqout[i];
+    dropped = kqdropped;
+    if (lamp > 0) {
+        least = leastt = leastu = 1e9;
+        for (int i = 0; i < count; ++i) if (!kqout[i]) {
+            if (risk[i] < least) least = risk[i];
+            if (riskt[i] < leastt) leastt = riskt[i];
+            if (risku[i] < leastu) leastu = risku[i];
+        }
+        for (int pass = 0; pass < 2; ++pass) {
+            dropped = 0;
+            for (int i = 0; i < count; ++i) {
+                out[i] = kqout[i] || riskt[i] > leastt + guard
+                      || (pass == 0 && (risk[i] > least + guard || (uguard >= 0 && risku[i] > leastu + uguard)));
+                dropped += out[i];
+            }
+            if (dropped < count) break;
+        }
+    }
+    st->least = least; st->leastt = leastt; st->leastu = leastu;
+    st->kleast = kleast; st->kleastt = kleastt; st->kqleast = kqleast; st->kqleastt = kqleastt;
+    st->dropped = dropped; st->kqdropped = kqdropped;
+}
+
 int main(void) {
     char line[256];
     if (!fgets(line, sizeof line, stdin) || strncmp(line, "fow", 3) != 0) return 0;
@@ -489,60 +567,13 @@ int main(void) {
              * through (two 7-9-ply losses). A move is out when it is above
              * the safest under either; if that leaves nothing, under the
              * sharper one alone. guard_temp 1 is the fitted guard only. */
-            double risk[256], riskt[256], risku[256], least = 1e9, leastt = 1e9, leastu = 1e9, kleast = 1e9, kleastt = 1e9;
             double krisk[256], kriskt[256], krisku[256];
-            double rkq[256], rkqt[256], kqleast = 1e9, kqleastt = 1e9;   /* king + queen only, for the log */
-            for (int i = 0; i < allowed.count; ++i) {
-                king_risks(&b, allowed.moves[i], 20000, guard_temp, &krisk[i], &kriskt[i], &krisku[i]);
-                rkq[i] = krisk[i] + lam * qrisk[i];
-                rkqt[i] = kriskt[i] + lam * qriskt[i];
-                risk[i] = rkq[i] + lamp * prisk[i];
-                riskt[i] = rkqt[i] + lamp * priskt[i];
-                risku[i] = krisku[i] + lam * qrisku[i] + lamp * prisku[i];
-                if (risk[i] < least) least = risk[i];
-                if (riskt[i] < leastt) leastt = riskt[i];
-                if (risku[i] < leastu) leastu = risku[i];
-                if (krisk[i] < kleast) kleast = krisk[i];
-                if (kriskt[i] < kleastt) kleastt = kriskt[i];
-                if (rkq[i] < kqleast) kqleast = rkq[i];
-                if (rkqt[i] < kqleastt) kqleastt = rkqt[i];
-            }
-            /* v35's rule first, on king + queen: a move it leaves out stays out */
-            int kqout[256], out[256], dropped = 0, kqdropped = 0;
-            double rkqu[256], kquleast = 1e9;
-            for (int i = 0; i < allowed.count; ++i) { rkqu[i] = krisku[i] + lam * qrisku[i]; if (rkqu[i] < kquleast) kquleast = rkqu[i]; }
-            for (int pass = 0; pass < 2; ++pass) {
-                kqdropped = 0;
-                for (int i = 0; i < allowed.count; ++i) {
-                    kqout[i] = rkqt[i] > kqleastt + guard
-                             || (pass == 0 && (rkq[i] > kqleast + guard || (uguard >= 0 && rkqu[i] > kquleast + uguard)));
-                    kqdropped += kqout[i];
-                }
-                if (kqdropped < allowed.count) break;
-            }
-            /* v20: the piece term only narrows among v35's survivors. Measured
-             * against all moves it brought back a 5.7% king risk for a piece
-             * risk (out-of-sample 05i9doxr:22, 26 Oct): a lost king is the
-             * game, a lost piece is not. With the piece term off this is v35. */
-            for (int i = 0; i < allowed.count; ++i) out[i] = kqout[i];
-            dropped = kqdropped;
-            if (lamp > 0) {
-                least = leastt = leastu = 1e9;
-                for (int i = 0; i < allowed.count; ++i) if (!kqout[i]) {
-                    if (risk[i] < least) least = risk[i];
-                    if (riskt[i] < leastt) leastt = riskt[i];
-                    if (risku[i] < leastu) leastu = risku[i];
-                }
-                for (int pass = 0; pass < 2; ++pass) {
-                    dropped = 0;
-                    for (int i = 0; i < allowed.count; ++i) {
-                        out[i] = kqout[i] || riskt[i] > leastt + guard
-                              || (pass == 0 && (risk[i] > least + guard || (uguard >= 0 && risku[i] > leastu + uguard)));
-                        dropped += out[i];
-                    }
-                    if (dropped < allowed.count) break;
-                }
-            }
+            for (int i = 0; i < allowed.count; ++i) king_risks(&b, allowed.moves[i], 20000, guard_temp, &krisk[i], &kriskt[i], &krisku[i]);
+            int kqout[256], out[256];
+            GuardStats gs;
+            guard_rule(allowed.count, krisk, kriskt, krisku, qrisk, qriskt, qrisku, prisk, priskt, prisku, lam, lamp, guard, uguard, out, kqout, &gs);
+            const double least = gs.least, leastt = gs.leastt, kleast = gs.kleast, kleastt = gs.kleastt;
+            const int dropped = gs.dropped;
             Move gex[256]; int ng = 0;   /* the guards' exclusions; united with the repetition rule's below */
             int mdropped = 0, qdropped = 0, pdropped = 0;
             for (int i = 0; i < allowed.count; ++i) {
