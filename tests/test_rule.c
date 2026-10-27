@@ -91,9 +91,12 @@ static void rule_tests(void) {
  * hangs to a knight, one where only the a2 rook can hang. */
 static void risk_tests(void) {
     Position ws[3];
-    t_setup(&ws[0], "Kf1 Qd4 Ra2 Rf2 kh8 rf8 ng4");
-    t_setup(&ws[1], "Kf1 Qd4 Ra2 Rf2 kh8 bf6 nc3");
-    t_setup(&ws[2], "Kf1 Qd4 Ra2 Rf2 kh8 bb1");
+    /* the pawns g7 and h7 close d4-h8 and the h-file to the king: without them our queen, or
+     * the rook after f2h2, already attacks the king, and every enemy capture that leaves it so
+     * is a suicidal one that the terminal-aware helpers do not charge (terminal_tests) */
+    t_setup(&ws[0], "Kf1 Qd4 Ra2 Rf2 kh8 rf8 ng4 pg7");
+    t_setup(&ws[1], "Kf1 Qd4 Ra2 Rf2 kh8 bf6 nc3 ph7");
+    t_setup(&ws[2], "Kf1 Qd4 Ra2 Rf2 kh8 bb1 pg7");
     Belief b; memset(&b, 0, sizeof b);
     b.items = ws; b.count = 3; b.us = t_us;
     double k1, kt, ku, q1, qt, qu, p1, pt, pu;
@@ -160,9 +163,88 @@ static void edge_tests(void) {
     CHECK(fabs(q1 - 1.0) < eps && fabs(p1) < eps && fabs(k1) < eps, "a promoted queen taken at once is the queen term's event (captures credited, promotion gain not)");
 }
 
+/* Terminal awareness of the piece helper (Astra, 27 Oct, from the r3 bench:
+ * v36r3-vs-misty pair 0 as White, decision 28). An enemy capture that leaves
+ * the enemy king capturable ends the game in our favour on the next ply, so it
+ * is no loss of the piece: best_capture_net must skip it, whether the capturer
+ * is the king itself or a piece whose capture opens its king. Captures that
+ * are safe for the capturer stay charged. */
+static void terminal_tests(void) {
+    Belief b; memset(&b, 0, sizeof b);
+    Position w; b.items = &w; b.count = 1; b.us = t_us;
+    double k1, kt, ku, q1, qt, qu, p1, pt, pu;
+    const double eps = 1e-9;
+    /* 1. the bench board: our rook d7 is attacked only by the king e8. Rb1-d1 defends it, so
+     *    Kxd7 would lose the king to Rxd7: no piece event. Rb1-c1 leaves d7 undefended: Kxd7
+     *    is safe and the rook is lost. Rxb7 takes a pawn into the queen's reach for a net loss
+     *    of 4 under recapture: no event. The played move was Rxb7; the vetoed one Rd1. */
+    t_setup(&w, "Kg1 Rb1 Rd7 Bf4 Pa2 Pf2 Pg2 Ph3 Pe4 ke8 rc8 qa6 bc5 pb7 pf7 pg6 ph4");
+    {
+        Position q = w; Undo u, v; make_move(&q, t_mv("b1d1"), &u);
+        CHECK(!mover_left_king_capturable(&q), "Rd1 leaves our king covered");
+        make_move(&q, t_mv("e8d7"), &v);
+        CHECK(mover_left_king_capturable(&q), "after Rd1, Kxd7 leaves the king to Rxd7");
+    }
+    const Move rd1 = t_mv("b1d1"), rxb7 = t_mv("d7b7"), rc1 = t_mv("b1c1");
+    const Move three[3] = {rd1, rxb7, rc1};
+    double kr[3], krt[3], kru[3], qr[3], qrt[3], qru[3], pr[3], prt[3], pru[3];
+    for (int i = 0; i < 3; ++i) {
+        king_risks(&b, three[i], 20000, 2.0, &kr[i], &krt[i], &kru[i]);
+        queen_risks(&b, three[i], 20000, 2.0, 4, &qr[i], &qrt[i], &qru[i]);
+        piece_risks(&b, three[i], 20000, 2.0, 3, 4, &pr[i], &prt[i], &pru[i]);
+    }
+    CHECK(fabs(pr[0]) < eps && fabs(prt[0]) < eps && fabs(pru[0]) < eps, "Rd1: the king's capture of the defended rook is its own loss, not a piece event");
+    CHECK(fabs(pr[1]) < eps, "Rxb7: the rook taken back by the queen nets -4, no piece event");
+    CHECK(fabs(pr[2] - 1.0) < eps, "Rc1: the undefended rook d7 falls to the king for 5, a piece event");
+    CHECK(fabs(kr[0]) < eps && fabs(qr[0]) < eps && fabs(kr[1]) < eps && fabs(qr[1]) < eps, "neither move risks the king or the queen on this board");
+    {
+        int out[3], kq[3]; GuardStats st;
+        guard_rule(3, kr, krt, kru, qr, qrt, qru, pr, prt, pru, 0.9, 0.758, 0.02, -1, out, kq, &st);
+        CHECK(!kq[0] && !kq[1], "v35's king + queen rule keeps Rd1 and Rxb7");
+        CHECK(!out[0] && !out[1] && out[2], "with the piece term Rd1 and Rxb7 stay in and Rc1 is out");
+    }
+    /* 2. a non-king capture that opens its own king: the knight e6 is pinned to e8 by our rook e1.
+     *    Nxd4 would win the undefended bishop but leaves the king to Rxe8: no piece event after a
+     *    quiet move of ours. With our rook on a1 instead the knight is free and the bishop is lost. */
+    t_setup(&w, "Kg1 Ph2 Re1 Bd4 ke8 ne6");
+    {
+        Position q = w; Undo u, v; make_move(&q, t_mv("h2h3"), &u);
+        make_move(&q, t_mv("e6d4"), &v);
+        CHECK(mover_left_king_capturable(&q), "after h3, Nxd4 opens the e-file to the king");
+    }
+    piece_risks(&b, t_mv("h2h3"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    CHECK(fabs(p1) < eps && fabs(pt) < eps && fabs(pu) < eps, "a pinned knight's capture of the bishop is no piece event");
+    t_setup(&w, "Kg1 Ph2 Ra1 Bd4 ke8 ne6");
+    piece_risks(&b, t_mv("h2h3"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    CHECK(fabs(p1 - 1.0) < eps, "the free knight's capture of the undefended bishop is a piece event");
+    /* 3. the queen's world is found through the same helper: the knight e6, pinned to e8 by our
+     *    rook e1, attacks our queen d4. Nxd4 would open the king to Rxe8, so this is no queen's
+     *    world, and the rook a5 hanging to the bishop c7 is charged to the piece term. (With the
+     *    older accounting the queen's capture made it the queen's world and the rook went uncounted.) */
+    t_setup(&w, "Kg1 Ph2 Re1 Qd4 Ra5 ke8 ne6 bc7");
+    piece_risks(&b, t_mv("h2h3"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    CHECK(fabs(p1 - 1.0) < eps, "the pinned knight's capture of the queen is no queen's world: the rook a5 hanging to the bishop is the piece term's event");
+    queen_risks(&b, t_mv("h2h3"), 20000, 2.0, 4, &q1, &qt, &qu);
+    CHECK(fabs(q1) < eps, "the queen term agrees: the pinned knight's capture is no queen event");
+    /* 4. the queen helper on the same predicate (Astra's corner): our queen arrives next to the king,
+     *    defended by the rook d1, while our knight f8 stands where the king can take it safely. Kxd7
+     *    is suicidal, Kxf8 is not. Queen 0, piece 1: one event on the world. With the queen helper
+     *    on the older accounting the world would be charged twice (queen 1 for Kxd7, piece 1 for Kxf8). */
+    t_setup(&w, "Kg1 Rd1 Qd4 Nf8 ke8");
+    queen_risks(&b, t_mv("d4d7"), 20000, 2.0, 4, &q1, &qt, &qu);
+    piece_risks(&b, t_mv("d4d7"), 20000, 2.0, 3, 4, &p1, &pt, &pu);
+    king_risks(&b, t_mv("d4d7"), 20000, 2.0, &k1, &kt, &ku);
+    CHECK(fabs(q1) < eps && fabs(qt) < eps && fabs(qu) < eps, "Qd7 defended by Rd1: the king's capture is no queen event");
+    CHECK(fabs(p1 - 1.0) < eps, "the knight f8 the king takes safely is the piece term's event");
+    CHECK(k1 + q1 + p1 < 1 + eps, "one event on the world, not two");
+    t_setup(&w, "Kg1 Ra1 Qd4 ke8");
+    queen_risks(&b, t_mv("d4d7"), 20000, 2.0, 4, &q1, &qt, &qu);
+    CHECK(fabs(q1 - 1.0) < eps, "Qd7 undefended: the king takes it safely, a queen event");
+}
+
 int main(void) {
     fow_init();
-    for (t_us = WHITE; t_us <= BLACK; ++t_us) { rule_tests(); risk_tests(); edge_tests(); printf("%s: done\n", t_us == WHITE ? "as White" : "as Black"); }
+    for (t_us = WHITE; t_us <= BLACK; ++t_us) { rule_tests(); risk_tests(); edge_tests(); terminal_tests(); printf("%s: done\n", t_us == WHITE ? "as White" : "as Black"); }
     if (failures) { printf("test_rule: %d failures\n", failures); return 1; }
     printf("test_rule: passed\n");
     return 0;

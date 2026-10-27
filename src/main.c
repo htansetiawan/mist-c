@@ -94,6 +94,7 @@ static double material_risk(const Belief *b, Move m, size_t cap) {
             int gain = piece_pawns[taken];
             if (gain <= best) continue;
             Position q = p; Undo v; make_move(&q, l.moves[j], &v);
+            if (mover_left_king_capturable(&q)) continue;   /* a suicidal capture: won, not lost (as best_capture_net) */
             if (is_attacked(&q, to, us)) gain -= piece_pawns[p.piece[from]];
             if (gain > best) best = gain;
         }
@@ -137,6 +138,7 @@ static void queen_risks(const Belief *b, Move m, size_t cap, double temp, int th
                 if (MOVE_TO(l.moves[j]) != sq) continue;
                 int gain = piece_pawns[QUEEN];
                 Position q = p; Undo v; make_move(&q, l.moves[j], &v);
+                if (mover_left_king_capturable(&q)) continue;   /* a suicidal capture: won, not lost (as best_capture_net) */
                 if (is_attacked(&q, sq, us)) gain -= piece_pawns[p.piece[MOVE_FROM(l.moves[j])]];
                 if (gain > best) best = gain;
             }
@@ -157,7 +159,12 @@ static void queen_risks(const Belief *b, Move m, size_t cap, double temp, int th
  * where the queen can be taken for `queen_threshold` or more net is the queen
  * term's and is not counted here even if a rook or minor also hangs on it;
  * the piece term counts only the remaining worlds. So the combined risk is a
- * weighted share of disjoint world events, never above 1 on any world. In
+ * weighted share of disjoint world events, never above 1 on any world. An
+ * enemy capture that leaves the enemy king capturable (the king taking a
+ * defended piece, a pinned piece taking) is a won game, not a loss: all three
+ * capture helpers (queen_risks, best_capture_net here, material_risk) skip
+ * it, so the queen's world is the same event for the queen term and for this
+ * term's exclusion. v35 charged such captures (Astra, 27 Oct, r3 bench). In
  * v35's games against the top six 54% became queen trades that we then lost
  * on material (scored 0.20-0.28): the guard covered the king and the queen,
  * and a rook or minor left to an unseen attacker was the search's few sampled
@@ -171,6 +178,10 @@ static int best_capture_net(const Position *p, int sq, int us, MoveList *l, int 
         if (MOVE_TO(l->moves[j]) != sq) continue;
         int gain = piece_pawns[p->piece[sq]];
         Position q = *p; Undo v; make_move(&q, l->moves[j], &v);
+        /* a capture that leaves the capturer's own king to be taken (the king
+         * taking a defended piece, a pinned piece taking) ends the game for us
+         * on the next ply: no loss of the piece (Astra, 27 Oct, r3 bench) */
+        if (mover_left_king_capturable(&q)) continue;
         if (is_attacked(&q, sq, us)) gain -= piece_pawns[p->piece[MOVE_FROM(l->moves[j])]];
         if (gain > best) best = gain;
     }
