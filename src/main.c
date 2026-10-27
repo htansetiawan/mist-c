@@ -352,7 +352,7 @@ int main(void) {
      * does not count). MIST_PIECE_CAP: boards of P measured. lambda is fitted
      * from our score against the top six after a clean rook or minor loss,
      * relative to the queen's 0.9; off until the candidate ships. */
-    const double pguard = getenv("MIST_PIECE_GUARD") ? atof(getenv("MIST_PIECE_GUARD")) : -1.0;
+    const double pguard = getenv("MIST_PIECE_GUARD") ? atof(getenv("MIST_PIECE_GUARD")) : 0.758;   /* v20 B2 default: the fitted lambda; negative turns the term off */
     const int ploss = getenv("MIST_PIECE_LOSS") ? atoi(getenv("MIST_PIECE_LOSS")) : 3;
     const size_t pcap = getenv("MIST_PIECE_CAP") ? (size_t)strtoull(getenv("MIST_PIECE_CAP"), NULL, 10) : 20000;
     /* decision replay (tests): our first decisions play these moves (comma
