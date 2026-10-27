@@ -36,5 +36,13 @@ int front_lead(const Front *f, const char view[65]);
 int front_repeats(const Front *f, const char view[65], const MoveList *moves, Move *out);
 /* The move in `allowed` with the best evaluation on the visible position. */
 Move front_best_allowed(const Front *f, const char view[65], const MoveList *allowed);
+/* the same, skipping the `navoid` moves in `avoid` (the search's exclusions);
+ * they are ignored only when they would leave nothing */
+Move front_best_allowed_avoiding(const Front *f, const char view[65], const MoveList *allowed, const Move *avoid, int navoid);
+/* the root exclusions: the repetition rule's moves and the guards' moves
+ * united, into `out` (room for both lists); when the union would leave no
+ * move the repetition rule yields and only the guards' moves are listed
+ * (`yielded` set when that happened). Returns the count. */
+int front_exclusions(const MoveList *allowed, const Move *repeats, int nrep, const Move *guards, int nguard, Move *out, int *yielded);
 
 #endif

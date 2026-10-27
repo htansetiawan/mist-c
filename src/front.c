@@ -80,13 +80,54 @@ int front_repeats(const Front *f, const char view[65], const MoveList *moves, Mo
     return n;
 }
 
-Move front_best_allowed(const Front *f, const char view[65], const MoveList *allowed) {
+Move front_best_allowed_avoiding(const Front *f, const char view[65], const MoveList *allowed, const Move *avoid, int navoid) {
     Position seen; front_view_position(view, f->us, f->castle, &seen);
-    Move best = allowed->moves[0]; int best_cp = -1000000;
-    for (int i = 0; i < allowed->count; ++i) {
-        Position q = seen; Undo u; make_move(&q, allowed->moves[i], &u);
-        const int cp = king_square(&q, f->us ^ 1) < 0 ? 100000 : evaluate_cp(&q, f->us);
-        if (cp > best_cp) { best_cp = cp; best = allowed->moves[i]; }
+    Move best = allowed->moves[0]; int best_cp = -1000000, any = 0;
+    for (int pass = 0; pass < 2 && !any; ++pass) {   /* pass 0 respects the exclusions; pass 1 runs only when they left nothing */
+        for (int i = 0; i < allowed->count; ++i) {
+            int excluded = 0;
+            if (pass == 0) for (int k = 0; k < navoid && !excluded; ++k) excluded = avoid[k] == allowed->moves[i];
+            if (excluded) continue;
+            Position q = seen; Undo u; make_move(&q, allowed->moves[i], &u);
+            const int cp = king_square(&q, f->us ^ 1) < 0 ? 100000 : evaluate_cp(&q, f->us);
+            if (!any || cp > best_cp) { best_cp = cp; best = allowed->moves[i]; }
+            any = 1;
+        }
     }
     return best;
+}
+
+Move front_best_allowed(const Front *f, const char view[65], const MoveList *allowed) {
+    return front_best_allowed_avoiding(f, view, allowed, NULL, 0);
+}
+
+/* v35 reopened every root move when the repetition rule's exclusions and the
+ * guards' together covered them all (gtcfr_decide keeps a move only when some
+ * move is left). A draw by repetition when ahead costs less than a move the
+ * guards found dangerous, so the repetition rule yields instead. */
+int front_exclusions(const MoveList *allowed, const Move *repeats, int nrep, const Move *guards, int nguard, Move *out, int *yielded) {
+    int n = 0, kept = 0;
+    if (yielded) *yielded = 0;
+    for (int i = 0; i < allowed->count; ++i) {
+        int r = 0, g = 0;
+        for (int k = 0; k < nrep && !r; ++k) r = repeats[k] == allowed->moves[i];
+        for (int k = 0; k < nguard && !g; ++k) g = guards[k] == allowed->moves[i];
+        if (!r && !g) ++kept;
+    }
+    if (kept == 0) {
+        if (nguard < allowed->count) {
+            for (int k = 0; k < nguard; ++k) out[n++] = guards[k];
+            if (yielded) *yielded = nrep > 0;
+            return n;
+        }
+        if (nrep < allowed->count) { for (int k = 0; k < nrep; ++k) out[n++] = repeats[k]; return n; }
+        return 0;
+    }
+    for (int k = 0; k < nrep; ++k) out[n++] = repeats[k];
+    for (int k = 0; k < nguard; ++k) {
+        int dup = 0;
+        for (int j = 0; j < nrep && !dup; ++j) dup = repeats[j] == guards[k];
+        if (!dup) out[n++] = guards[k];
+    }
+    return n;
 }

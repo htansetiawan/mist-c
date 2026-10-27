@@ -428,12 +428,12 @@ int main(void) {
         view_moves(view, us, front.castle, &allowed);
         /* ahead: leave out the moves that would make our pieces stand as they
          * already have twice (the referee's threefold needs that) */
-        Move repeats[256];
+        Move repeats[256]; int nrep = 0;
         const int lead = front_lead(&front, view);
         if (lead >= repeat_lead && allowed.count > 0) {
             const int n = front_repeats(&front, view, &allowed, repeats);
             if (n > 0 && n < allowed.count) {
-                gp.avoid = repeats; gp.avoid_count = n;
+                gp.avoid = repeats; gp.avoid_count = n; nrep = n;
                 fprintf(stderr, "mist: ahead by %d; %d moves would repeat our pieces a third time, left out\n", lead, n);
             }
         }
@@ -543,8 +543,7 @@ int main(void) {
                     if (dropped < allowed.count) break;
                 }
             }
-            int n = gp.avoid_count;
-            for (int i = 0; i < n; ++i) guarded[i] = gp.avoid[i];
+            Move gex[256]; int ng = 0;   /* the guards' exclusions; united with the repetition rule's below */
             int mdropped = 0, qdropped = 0, pdropped = 0;
             for (int i = 0; i < allowed.count; ++i) {
                 /* what the queen added: out under king + queen, not under the king's alone;
@@ -557,11 +556,14 @@ int main(void) {
                     fprintf(stderr, "mist: piece veto %s\n", u);
                     ++pdropped;
                 }
-                if (out[i]) guarded[n++] = allowed.moves[i];
-                else if (mguard >= 0 && have_mrisk && mrisk[i] > mleast + mguard) { guarded[n++] = allowed.moves[i]; ++mdropped; }
+                if (out[i]) gex[ng++] = allowed.moves[i];
+                else if (mguard >= 0 && have_mrisk && mrisk[i] > mleast + mguard) { gex[ng++] = allowed.moves[i]; ++mdropped; }
             }
             if (dropped + mdropped > 0 && dropped + mdropped < allowed.count) {
+                int yielded = 0;
+                const int n = front_exclusions(&allowed, repeats, nrep, gex, ng, guarded, &yielded);
                 gp.avoid = guarded; gp.avoid_count = n;
+                if (yielded) fprintf(stderr, "mist: the guards and the repetition rule would leave no move; the repetition rule yields\n");
                 if (dropped > 0) fprintf(stderr, "mist: king guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", dropped, allowed.count, least, leastt);
                 if (qdropped > 0) fprintf(stderr, "mist: queen guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", qdropped, allowed.count, qleast, qleastt);
                 if (pdropped > 0) fprintf(stderr, "mist: piece guard left out %d of %d moves (safest %.3f, sharper %.3f)\n", pdropped, allowed.count, pleast, pleastt);
@@ -609,7 +611,7 @@ int main(void) {
             if (ok && !found && !b.overflowed) found = legal_everywhere(&b, r.move);
             if (!ok || !found) {
                 char bad[6]; move_to_uci(r.move, bad);
-                r.move = front_best_allowed(&front, view, &allowed);
+                r.move = front_best_allowed_avoiding(&front, view, &allowed, gp.avoid, gp.avoid_count);   /* the guards' exclusions hold here too */
                 fprintf(stderr, "mist: %s is not legal on every board the view allows; playing a move it allows\n", ok ? bad : "(none)");
                 ok = 1;
             }

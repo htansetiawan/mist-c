@@ -95,6 +95,29 @@ static void run(void) {
     view_moves(view, us, 0, &allowed);
     front_init(&f, us);
     CHECK(front_best_allowed(&f, view, &allowed) == mv("h1h8"), "the last resort takes the king");
+    /* the root exclusions: the repetition rule yields when the union would leave nothing */
+    {
+        Move rep[256], gd[256], out[512]; int nr = 0, ng = 0, yielded = 0;
+        const Move b = allowed.moves[allowed.count - 1];
+        for (int i = 0; i + 1 < allowed.count; ++i) rep[nr++] = allowed.moves[i];   /* every move but b repeats */
+        gd[ng++] = b;                                                                 /* the guards exclude b */
+        int n = front_exclusions(&allowed, rep, nr, gd, ng, out, &yielded);
+        CHECK(n == 1 && out[0] == b && yielded, "the repetition rule yields to the guards when nothing would be left");
+        n = front_exclusions(&allowed, rep, 1, gd, 1, out, &yielded);
+        CHECK(n == 2 && !yielded, "otherwise the exclusions are the union");
+        n = front_exclusions(&allowed, rep, 1, rep, 1, out, &yielded);
+        CHECK(n == 1 && !yielded, "a move in both lists is listed once");
+        n = front_exclusions(&allowed, allowed.moves, allowed.count, allowed.moves, allowed.count, out, &yielded);
+        CHECK(n == 0, "both lists covering everything exclude nothing");
+    }
+    /* the legality fallback respects the exclusions, and ignores them only when nothing is left */
+    {
+        Move avoid[1] = { mv("h1h8") };
+        const Move m = front_best_allowed_avoiding(&f, view, &allowed, avoid, 1);
+        int in = 0; for (int i = 0; i < allowed.count; ++i) in |= allowed.moves[i] == m;
+        CHECK(m != mv("h1h8") && in, "the fallback skips an excluded move");
+        CHECK(front_best_allowed_avoiding(&f, view, &allowed, allowed.moves, allowed.count) == mv("h1h8"), "with every move excluded the fallback ignores the exclusions");
+    }
     printf("%s: done\n", colour);
 }
 
