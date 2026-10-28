@@ -49,6 +49,8 @@ void pos_remove(Position *p, int square);
 /* 64-char board string (a1..h8, letters, '-' empty), side, castling rook mask, ep square. */
 int pos_from_board_string(Position *p, const char *text, int side, bb_t castle_rooks, int ep);
 void pos_to_board_string(const Position *p, char out[65]);
+/* Does the placement of `p` equal the 64-char board string (castling and en passant not compared)? */
+int pos_matches_board_string(const Position *p, const char *text);
 
 bb_t attacks_from(const Position *p, int square);  /* squares the piece on `square` attacks */
 int is_attacked(const Position *p, int square, int by_color);

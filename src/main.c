@@ -226,15 +226,6 @@ static void piece_risks(const Belief *b, Move m, size_t cap, double temp, int th
 /* Diagnostics (MIST_TRUTH_SEQ: the true boards of the game, one 64-character
  * string per view in the protocol's order, comma separated): does P hold the
  * true position after each update, with what weight share and at what rank. */
-static int position_is(const Position *p, const char *board) {
-    for (int sq = 0; sq < 64; ++sq) {
-        const char c = board[sq];
-        if (c == '-') { if (p->piece[sq] != NO_PIECE) return 0; continue; }
-        const char *t = strchr("PNBRQK", c >= 'a' ? c - 32 : c);
-        if (!t || p->piece[sq] != (int)(t - "PNBRQK") || p->color[sq] != (c >= 'a' ? BLACK : WHITE)) return 0;
-    }
-    return 1;
-}
 static void truth_report(const Belief *b, const char *seq, int view_index) {
     const char *board = seq;
     for (int i = 0; i < view_index && board; ++i) { board = strchr(board, ','); if (board) ++board; }
@@ -243,12 +234,46 @@ static void truth_report(const Belief *b, const char *seq, int view_index) {
     for (size_t i = 0; i < b->count; ++i) {
         const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
         total += w;
-        if (mine < 0 && position_is(&b->items[i], board)) { mine = w; where = i; }
+        if (mine < 0 && pos_matches_board_string(&b->items[i], board)) { mine = w; where = i; }
     }
     if (mine < 0) { fprintf(stderr, "mist: truth v=%d |P|=%zu%s LOST\n", view_index, b->count, b->overflowed ? "(capped)" : ""); return; }
     size_t rank = 1;
     for (size_t i = 0; i < b->count; ++i) if (i != where && (b->logw ? exp((double)b->logw[i]) : 1.0) > mine) ++rank;
     fprintf(stderr, "mist: truth v=%d |P|=%zu%s share=%.5f rank=%zu\n", view_index, b->count, b->overflowed ? "(capped)" : "", total > 0 ? mine / total : 0, rank);
+}
+
+/* Oracle (MIST_ORACLE_FILE; local experiments only, never shipped on): before
+ * each of our decisions the file holds the true board as the local referee's
+ * frame hook writes it, "<64 squares a1..h8> <w|b> <castling KQkq or -> <ep
+ * square or ->". P is collapsed to the worlds with that placement, or to the
+ * file's position when P has lost it. The same search on a correct belief:
+ * what belief work is worth at most (docs/top3-reanalysis-20261027.md). */
+static int oracle_collapse(Belief *b, const char *path, int us, int view_index) {
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "mist: oracle v=%d file missing, belief kept\n", view_index); return 0; }
+    char board[80] = "", side[4] = "", castle[8] = "", ep[8] = "";
+    const int n = fscanf(f, "%79s %3s %7s %7s", board, side, castle, ep);
+    fclose(f);
+    if (n < 4 || strlen(board) != 64 || (side[0] == 'w' ? WHITE : BLACK) != us) {
+        fprintf(stderr, "mist: oracle v=%d file unusable (%d fields, side '%s'), belief kept\n", view_index, n, side);
+        return 0;
+    }
+    bb_t rooks = 0;
+    for (const char *c = castle; *c; ++c) {
+        if (*c == 'K') rooks |= 1ULL << 7; else if (*c == 'Q') rooks |= 1ULL << 0;
+        else if (*c == 'k') rooks |= 1ULL << 63; else if (*c == 'q') rooks |= 1ULL << 56;
+    }
+    int eps = -1;
+    if (ep[0] >= 'a' && ep[0] <= 'h' && ep[1] >= '1' && ep[1] <= '8') eps = (ep[1] - '1') * 8 + (ep[0] - 'a');
+    Position truth;
+    if (pos_from_board_string(&truth, board, us, rooks, eps) != 0) {
+        fprintf(stderr, "mist: oracle v=%d board unreadable, belief kept\n", view_index);
+        return 0;
+    }
+    const size_t before = b->count;
+    const size_t matched = belief_keep_board(b, board, &truth);
+    fprintf(stderr, "mist: oracle v=%d |P| %zu -> %zu (%s)\n", view_index, before, b->count, matched ? "truth in P" : "truth placed");
+    return 1;
 }
 
 /* king_risk on at most `cap` boards of P, evenly strided, under the belief's
@@ -448,6 +473,8 @@ int main(void) {
      * separated UCI, as the game went) and the next one is searched */
     const char *forced = getenv("MIST_FORCE_MOVES");
     const char *truth_seq = getenv("MIST_TRUTH_SEQ");
+    const char *oracle_file = getenv("MIST_ORACLE_FILE");
+    if (oracle_file && *oracle_file) fprintf(stderr, "mist: ORACLE belief from %s (local experiment)\n", oracle_file);
     /* MIST_STOCKFISH=path: Stockfish scores the search's leaves (paper, 3.3) */
     if (getenv("MIST_STOCKFISH") && *getenv("MIST_STOCKFISH"))
         fprintf(stderr, "mist: stockfish %s\n", sf_start(getenv("MIST_STOCKFISH")) ? "ready" : "failed to start; our evaluator scores the leaves");
@@ -502,6 +529,7 @@ int main(void) {
         /* our turn; the clock ran while we updated P. A larger sample of P
          * when there is time for it */
         const double remaining = reported - (now_seconds() - view_at);
+        if (oracle_file && *oracle_file) oracle_collapse(&b, oracle_file, us, views - 1);
         const double budget = move_budget(remaining, increment, max_seconds);
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }

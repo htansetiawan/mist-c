@@ -594,6 +594,33 @@ size_t belief_shrink(Belief *b, size_t target) {
     return target;
 }
 
+size_t belief_keep_board(Belief *b, const char *board, const Position *fallback) {
+    size_t k = 0;
+    for (size_t i = 0; i < b->count; ++i) {
+        if (!pos_matches_board_string(&b->items[i], board)) continue;
+        b->items[k] = b->items[i];
+        if (b->hist) b->hist[k] = b->hist[i];
+        if (b->logw) b->logw[k] = b->logw[i];
+        ++k;
+    }
+    const size_t matched = k;
+    if (k == 0 && fallback) {
+        if (b->capacity == 0 || !b->items) {
+            b->items = realloc(b->items, sizeof(Position));
+            if (b->hist) b->hist = realloc(b->hist, sizeof(uint64_t));
+            if (b->logw) b->logw = realloc(b->logw, sizeof(float));
+            b->capacity = 1;
+        }
+        b->items[0] = *fallback;
+        if (b->hist) b->hist[0] = 0;
+        if (b->logw) b->logw[0] = 0;
+        k = 1;
+    }
+    b->count = k;
+    b->overflowed = 0;
+    return matched;
+}
+
 int belief_contains(const Belief *b, const Position *p) {
     uint64_t key = position_key(p);
     for (size_t i = 0; i < b->count; ++i)

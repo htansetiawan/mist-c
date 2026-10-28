@@ -73,6 +73,15 @@ void pos_to_board_string(const Position *p, char out[65]) {
     out[64] = '\0';
 }
 
+int pos_matches_board_string(const Position *p, const char *text) {
+    for (int sq = 0; sq < 64; ++sq) {
+        const char c = text[sq];
+        if (c == '-') { if (p->piece[sq] != NO_PIECE) return 0; continue; }
+        if (p->piece[sq] == NO_PIECE || symbols[(int)p->color[sq]][(int)p->piece[sq]] != c) return 0;
+    }
+    return 1;
+}
+
 static bb_t slide(const Position *p, int sq, const int dirs[4][2]) {
     bb_t occupied = p->by_color[0] | p->by_color[1], out = 0;
     int f0 = sq % 8, r0 = sq / 8;

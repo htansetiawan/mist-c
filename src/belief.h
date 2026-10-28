@@ -55,6 +55,10 @@ size_t belief_after_own(Belief *b, Move m, const char view[65]);
 /* Keeps `target` positions of P drawn by weight without replacement (as past
  * the cap): for when the clock cannot pay for expanding all of P. */
 size_t belief_shrink(Belief *b, size_t target);
+/* Oracle (main.c, MIST_ORACLE_FILE; local experiments only): keeps the worlds
+ * whose placement is `board` (64 chars, a1..h8); when none is left, P becomes
+ * `fallback` alone (NULL: P stays empty). Returns how many worlds matched. */
+size_t belief_keep_board(Belief *b, const char *board, const Position *fallback);
 int belief_contains(const Belief *b, const Position *p);
 /* The weight share of `p` in P (0 if absent). */
 double belief_share(const Belief *b, const Position *p);
