@@ -1,0 +1,371 @@
+{
+ "args": {
+  "train": "/media/henrytan/seagate1/iamavirus-data/movemodel/arena-train-obs.bin",
+  "test": "/media/henrytan/seagate1/iamavirus-data/movemodel/arena-test-obs.bin",
+  "out": "/tmp/claude-1000/-home-henrytan-git-maestro/8b241d49-37bd-40b3-aaf1-00c52d08a537/scratchpad/obsfit/theta_obs.h",
+  "epochs": 8,
+  "positions": null,
+  "threads": 1,
+  "l2": 0.0001,
+  "lr": 0.05,
+  "batch": 2048,
+  "summary": "/tmp/claude-1000/-home-henrytan-git-maestro/8b241d49-37bd-40b3-aaf1-00c52d08a537/scratchpad/obsfit/fit.json",
+  "movemodel": "build/move_features",
+  "test_txt": "/media/henrytan/seagate1/iamavirus-data/movemodel/arena-test.txt",
+  "current": "src/movemodel_theta.h",
+  "note": "Fitted 2026-10-29 on 6,776 arena games since 2026-10-05 (509,476 positions), held out 1,224 games; dense + piece-square + observation features",
+  "no_dense_refit": true,
+  "control": true,
+  "out_control": "/tmp/claude-1000/-home-henrytan-git-maestro/8b241d49-37bd-40b3-aaf1-00c52d08a537/scratchpad/obsfit/theta_pst.h"
+ },
+ "current_full": {
+  "nats_over_uniform": 0.623,
+  "top1": 0.261,
+  "nll": 2.7052,
+  "positions": 92418
+ },
+ "fit_pst_full_control": {
+  "nats_over_uniform": 0.7592,
+  "top1": 0.2785,
+  "nll": 2.569,
+  "positions": 92418
+ },
+ "per_mover_full_pst_control": {
+  "Czechmate": {
+   "positions": 456,
+   "nats_over_uniform": -0.0886,
+   "top1": 0.2281
+  },
+  "Sausage": {
+   "positions": 2664,
+   "nats_over_uniform": 0.7544,
+   "top1": 0.2763
+  },
+  "IAmAVirus": {
+   "positions": 5989,
+   "nats_over_uniform": 0.7167,
+   "top1": 0.2753
+  },
+  "TA_Baseline_S": {
+   "positions": 5401,
+   "nats_over_uniform": 0.8824,
+   "top1": 0.3111
+  },
+  "TA_Baseline_P": {
+   "positions": 4992,
+   "nats_over_uniform": 0.9001,
+   "top1": 0.3145
+  },
+  "TA_Baseline_A": {
+   "positions": 5438,
+   "nats_over_uniform": 0.983,
+   "top1": 0.3323
+  },
+  "Knight_Vision": {
+   "positions": 6231,
+   "nats_over_uniform": 0.8225,
+   "top1": 0.2736
+  },
+  "duck": {
+   "positions": 7138,
+   "nats_over_uniform": 0.8637,
+   "top1": 0.3062
+  },
+  "Strongly_Invisible": {
+   "positions": 7553,
+   "nats_over_uniform": 0.752,
+   "top1": 0.262
+  },
+  "Instructors": {
+   "positions": 7340,
+   "nats_over_uniform": 0.705,
+   "top1": 0.2619
+  },
+  "Greek_Gift": {
+   "positions": 6505,
+   "nats_over_uniform": 0.7888,
+   "top1": 0.2706
+  },
+  "Mist_Opportunities": {
+   "positions": 4422,
+   "nats_over_uniform": 0.8007,
+   "top1": 0.3062
+  },
+  "Decent_Chess_Bot": {
+   "positions": 8396,
+   "nats_over_uniform": 0.814,
+   "top1": 0.28
+  },
+  "Apricot_Squad": {
+   "positions": 3013,
+   "nats_over_uniform": -0.0386,
+   "top1": 0.1523
+  },
+  "RATIRL": {
+   "positions": 207,
+   "nats_over_uniform": 0.9625,
+   "top1": 0.3285
+  },
+  "Mu1tip13_@g3nt$": {
+   "positions": 500,
+   "nats_over_uniform": 0.7799,
+   "top1": 0.272
+  },
+  "Lost_Signal": {
+   "positions": 4225,
+   "nats_over_uniform": 0.7408,
+   "top1": 0.2731
+  },
+  "Gravel_Road": {
+   "positions": 2993,
+   "nats_over_uniform": 0.7372,
+   "top1": 0.2977
+  },
+  "HYPOTHERMIA": {
+   "positions": 5237,
+   "nats_over_uniform": 0.6316,
+   "top1": 0.2391
+  },
+  "Crimson_Fog": {
+   "positions": 598,
+   "nats_over_uniform": 0.8931,
+   "top1": 0.2826
+  },
+  "In_Pawn_Sight": {
+   "positions": 2268,
+   "nats_over_uniform": 0.6225,
+   "top1": 0.2588
+  },
+  "Farsight": {
+   "positions": 189,
+   "nats_over_uniform": 0.7548,
+   "top1": 0.2751
+  },
+  "Foggy_Fischer": {
+   "positions": 591,
+   "nats_over_uniform": 0.7491,
+   "top1": 0.2623
+  },
+  "Resting_Bishop_Faces": {
+   "positions": 72,
+   "nats_over_uniform": -0.0839,
+   "top1": 0.1667
+  }
+ },
+ "theta_full_control": {
+  "capture": 0.944,
+  "captured_value": 5.7428,
+  "king_capture": 0.0,
+  "knight": -0.5914,
+  "bishop": -0.6713,
+  "rook": -0.4383,
+  "queen": -0.6494,
+  "king": -0.5774,
+  "double_push": 0.1648,
+  "castle": 2.3325,
+  "promote_queen": 2.2402,
+  "underpromote": -1.5529,
+  "forward": -0.4297,
+  "retreat": -0.003,
+  "centre": 0.4677,
+  "develop": 0.7179,
+  "recapture": 1.4604,
+  "advanced_pawn": 1.3472,
+  "check": 0.521,
+  "escape": 1.0129,
+  "into_attack": -0.1105,
+  "hang_value": -1.0225,
+  "self_capturable": -3.1722,
+  "undefended": -3.0909,
+  "king_zone": 0.5287,
+  "xray_king": 0.2172,
+  "check_unseen": 0.2407,
+  "threat_unseen": 0.4398,
+  "obs_escape_seen": 0.0,
+  "obs_into_attack_seen": 0.0,
+  "obs_hang_seen": 0.0,
+  "obs_capture_defended_seen": 0.0,
+  "obs_self_capturable_seen": 0.0,
+  "obs_threat_seen": 0.0,
+  "obs_approach_seen": 0.0,
+  "obs_reveal": 0.0,
+  "obs_threat_seen_value": 0.0,
+  "obs_capture_defended_unseen": 0.0,
+  "obs_fog_exposure": 0.0
+ },
+ "fit_pst_full": {
+  "nats_over_uniform": 0.7892,
+  "top1": 0.2823,
+  "nll": 2.539,
+  "positions": 92418
+ },
+ "per_mover_full_pst": {
+  "Czechmate": {
+   "positions": 456,
+   "nats_over_uniform": -0.1015,
+   "top1": 0.2237
+  },
+  "Sausage": {
+   "positions": 2664,
+   "nats_over_uniform": 0.7787,
+   "top1": 0.277
+  },
+  "IAmAVirus": {
+   "positions": 5989,
+   "nats_over_uniform": 0.7421,
+   "top1": 0.2802
+  },
+  "TA_Baseline_S": {
+   "positions": 5401,
+   "nats_over_uniform": 0.92,
+   "top1": 0.3198
+  },
+  "TA_Baseline_P": {
+   "positions": 4992,
+   "nats_over_uniform": 0.9236,
+   "top1": 0.3179
+  },
+  "TA_Baseline_A": {
+   "positions": 5438,
+   "nats_over_uniform": 1.0067,
+   "top1": 0.3385
+  },
+  "Knight_Vision": {
+   "positions": 6231,
+   "nats_over_uniform": 0.8592,
+   "top1": 0.2707
+  },
+  "duck": {
+   "positions": 7138,
+   "nats_over_uniform": 0.8958,
+   "top1": 0.3081
+  },
+  "Strongly_Invisible": {
+   "positions": 7553,
+   "nats_over_uniform": 0.7905,
+   "top1": 0.2697
+  },
+  "Instructors": {
+   "positions": 7340,
+   "nats_over_uniform": 0.7407,
+   "top1": 0.2579
+  },
+  "Greek_Gift": {
+   "positions": 6505,
+   "nats_over_uniform": 0.8256,
+   "top1": 0.2787
+  },
+  "Mist_Opportunities": {
+   "positions": 4422,
+   "nats_over_uniform": 0.8356,
+   "top1": 0.3098
+  },
+  "Decent_Chess_Bot": {
+   "positions": 8396,
+   "nats_over_uniform": 0.8482,
+   "top1": 0.2857
+  },
+  "Apricot_Squad": {
+   "positions": 3013,
+   "nats_over_uniform": -0.0533,
+   "top1": 0.157
+  },
+  "RATIRL": {
+   "positions": 207,
+   "nats_over_uniform": 0.9452,
+   "top1": 0.3382
+  },
+  "Mu1tip13_@g3nt$": {
+   "positions": 500,
+   "nats_over_uniform": 0.8254,
+   "top1": 0.268
+  },
+  "Lost_Signal": {
+   "positions": 4225,
+   "nats_over_uniform": 0.7661,
+   "top1": 0.285
+  },
+  "Gravel_Road": {
+   "positions": 2993,
+   "nats_over_uniform": 0.7571,
+   "top1": 0.2994
+  },
+  "HYPOTHERMIA": {
+   "positions": 5237,
+   "nats_over_uniform": 0.6728,
+   "top1": 0.2404
+  },
+  "Crimson_Fog": {
+   "positions": 598,
+   "nats_over_uniform": 0.9153,
+   "top1": 0.2809
+  },
+  "In_Pawn_Sight": {
+   "positions": 2268,
+   "nats_over_uniform": 0.6374,
+   "top1": 0.2637
+  },
+  "Farsight": {
+   "positions": 189,
+   "nats_over_uniform": 0.7401,
+   "top1": 0.2381
+  },
+  "Foggy_Fischer": {
+   "positions": 591,
+   "nats_over_uniform": 0.7892,
+   "top1": 0.269
+  },
+  "Resting_Bishop_Faces": {
+   "positions": 72,
+   "nats_over_uniform": -0.0955,
+   "top1": 0.1528
+  }
+ },
+ "theta_full": {
+  "capture": 0.8001,
+  "captured_value": 5.558,
+  "king_capture": 0.0,
+  "knight": -0.6258,
+  "bishop": -0.7335,
+  "rook": -0.6582,
+  "queen": -1.1393,
+  "king": -0.7935,
+  "double_push": 0.1582,
+  "castle": 2.1286,
+  "promote_queen": 1.1552,
+  "underpromote": -2.0197,
+  "forward": -0.2922,
+  "retreat": -0.0115,
+  "centre": 0.7896,
+  "develop": 0.6007,
+  "recapture": 1.4497,
+  "advanced_pawn": 1.6353,
+  "check": 0.432,
+  "escape": 0.6132,
+  "into_attack": -0.1096,
+  "hang_value": -0.6218,
+  "self_capturable": -2.9927,
+  "undefended": -3.3145,
+  "king_zone": 0.4111,
+  "xray_king": 0.21,
+  "check_unseen": 0.3287,
+  "threat_unseen": 0.3786,
+  "obs_escape_seen": 0.9597,
+  "obs_into_attack_seen": -0.1674,
+  "obs_hang_seen": -3.0817,
+  "obs_capture_defended_seen": 0.6819,
+  "obs_self_capturable_seen": -1.6816,
+  "obs_threat_seen": -0.4833,
+  "obs_approach_seen": 0.1643,
+  "obs_reveal": 1.5732,
+  "obs_threat_seen_value": 1.867,
+  "obs_capture_defended_unseen": 0.1759,
+  "obs_fog_exposure": -2.1642
+ },
+ "fit_pst_cheap": {
+  "nats_over_uniform": 0.6016,
+  "top1": 0.2572,
+  "nll": 2.7266,
+  "positions": 92418
+ }
+}

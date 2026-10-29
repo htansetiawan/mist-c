@@ -28,9 +28,13 @@ import torch
 NAMES = ["capture", "captured_value", "king_capture", "knight", "bishop", "rook", "queen", "king",
          "double_push", "castle", "promote_queen", "underpromote", "forward", "retreat", "centre",
          "develop", "recapture", "advanced_pawn", "check", "escape", "into_attack", "hang_value",
-         "self_capturable", "undefended", "king_zone", "xray_king", "check_unseen", "threat_unseen"]
+         "self_capturable", "undefended", "king_zone", "xray_king", "check_unseen", "threat_unseen",
+         "obs_escape_seen", "obs_into_attack_seen", "obs_hang_seen", "obs_capture_defended_seen",
+         "obs_self_capturable_seen", "obs_threat_seen", "obs_approach_seen", "obs_reveal",
+         "obs_threat_seen_value", "obs_capture_defended_unseen", "obs_fog_exposure"]
 DENSE = len(NAMES)
-ATTACK = slice(18, 28)
+ATTACK = slice(18, DENSE)   # attack and observation features: zero in the cheap model
+OBS = slice(28, DENSE)      # the observation features: zero in the control fit
 PIECES = 6
 
 
@@ -57,10 +61,12 @@ def load(path, limit=None):
 
 
 class Data:
-    def __init__(self, path, limit, cheap):
+    def __init__(self, path, limit, cheap, zero=None):
         X, idx, starts, counts, played, movers = load(path, limit)
         if cheap:
             X[:, ATTACK] = 0
+        if zero is not None:
+            X[:, zero] = 0
         self.X = torch.from_numpy(X)
         self.idx = torch.from_numpy(idx[:, 0] * 64 + idx[:, 1]), torch.from_numpy(idx[:, 0] * 64 + idx[:, 2])
         self.starts = torch.from_numpy(starts)
@@ -183,6 +189,9 @@ def main():
     ap.add_argument("--test-txt", default=None)
     ap.add_argument("--current", default="src/movemodel_theta.h", help="header whose theta_full is scored first")
     ap.add_argument("--note", default="")
+    ap.add_argument("--no-dense-refit", action="store_true", help="skip the dense-only refit")
+    ap.add_argument("--control", action="store_true", help="also fit the full+PST model with the observation features zeroed, as the control")
+    ap.add_argument("--out-control", default=None, help="write the control fit (its cheap part reuses the main cheap fit) as a header too")
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
     log = lambda s: print(s, flush=True)
@@ -197,6 +206,7 @@ def main():
     try:
         text = open(args.current).read()
         cur = torch.tensor([float(x) for x in re.search(r"theta_full\[MM_FEATURES\] = \{(.*?)\}", text, re.S).group(1).replace("f", "").split(",")])
+        cur = torch.cat([cur, torch.zeros(DENSE - len(cur))])  # a header written before new features were added
         pf_cur = pt_cur = None
         m = re.search(r"pst_from_full\[6\]\[64\] = \{(.*?)\n\};", text, re.S)
         if m:
@@ -209,20 +219,34 @@ def main():
     except Exception as e:  # noqa: BLE001
         log(f"current model not scored: {e}")
 
-    log("full model, dense features only (refit):")
-    th, _, _ = fit(train_full, test_full, False, args.epochs, args.lr, args.l2, args.batch, log)
-    summary["refit_dense_full"] = evaluate(test_full, th, None, None)[0]
+    names = mover_names(args.movemodel, args.test_txt)
+
+    def per_mover(d, logp, top1):
+        per = {}
+        for mid in sorted(set(d.movers.tolist())):
+            sel = d.movers == mid
+            per[names.get(mid, str(mid))] = {"positions": int(sel.sum()),
+                                             "nats_over_uniform": round((logp[sel] + torch.log(d.counts[sel].float())).mean().item(), 4),
+                                             "top1": round(top1[sel].float().mean().item(), 4)}
+        return per
+
+    if not args.no_dense_refit:
+        log("full model, dense features only (refit):")
+        th, _, _ = fit(train_full, test_full, False, args.epochs, args.lr, args.l2, args.batch, log)
+        summary["refit_dense_full"] = evaluate(test_full, th, None, None)[0]
+    if args.control:
+        log("control: full model with piece-square tables, observation features zeroed:")
+        train_ctl = Data(args.train, args.positions, cheap=False, zero=OBS)
+        test_ctl = Data(args.test, None, cheap=False, zero=OBS)
+        th_0, pf_0, pt_0 = fit(train_ctl, test_ctl, True, args.epochs, args.lr, args.l2, args.batch, log)
+        summary["fit_pst_full_control"], logp, top1 = evaluate(test_ctl, th_0, pf_0, pt_0)
+        summary["per_mover_full_pst_control"] = per_mover(test_ctl, logp, top1)
+        summary["theta_full_control"] = dict(zip(NAMES, [round(x, 4) for x in th_0.tolist()]))
+        del train_ctl, test_ctl
     log("full model with piece-square tables:")
     th_f, pf_f, pt_f = fit(train_full, test_full, True, args.epochs, args.lr, args.l2, args.batch, log)
     summary["fit_pst_full"], logp, top1 = evaluate(test_full, th_f, pf_f, pt_f)
-    names = mover_names(args.movemodel, args.test_txt)
-    per = {}
-    for mid in sorted(set(test_full.movers.tolist())):
-        sel = test_full.movers == mid
-        per[names.get(mid, str(mid))] = {"positions": int(sel.sum()),
-                                         "nats_over_uniform": round((logp[sel] + torch.log(test_full.counts[sel].float())).mean().item(), 4),
-                                         "top1": round(top1[sel].float().mean().item(), 4)}
-    summary["per_mover_full_pst"] = per
+    summary["per_mover_full_pst"] = per_mover(test_full, logp, top1)
     summary["theta_full"] = dict(zip(NAMES, [round(x, 4) for x in th_f.tolist()]))
     del train_full
     train_cheap = Data(args.train, args.positions, cheap=True)
@@ -234,6 +258,9 @@ def main():
     if args.out:
         open(args.out, "w").write(header((th_f, pf_f, pt_f), (th_c, pf_c, pt_c), args.note))
         log(f"wrote {args.out}")
+    if args.control and args.out_control:
+        open(args.out_control, "w").write(header((th_0, pf_0, pt_0), (th_c, pf_c, pt_c), args.note + " (control: observation features zeroed)"))
+        log(f"wrote {args.out_control}")
     if args.summary:
         json.dump(summary, open(args.summary, "w"), indent=1)
     log(json.dumps({k: v for k, v in summary.items() if k.startswith(("current", "refit", "fit"))}, indent=1))
