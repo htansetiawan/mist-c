@@ -3,12 +3,22 @@
 
 #include <string.h>
 
-static bb_t knight_table[64], king_table[64];
-static const int rook_dirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-static const int bishop_dirs[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+/* Tables, filled by fow_init: knight and king steps, the squares a pawn of each
+ * colour attacks, and the eight rays from each square (0..3 point up the
+ * board or to the right, so the first blocker is the lowest set bit; 4..7 the
+ * other way, the highest). Sliding attacks are the ray up to and including
+ * its first blocker; from the target's side the same rays find the attackers,
+ * so an attack test no longer visits every piece. */
+static bb_t knight_table[64], king_table[64], pawn_attack_table[2][64], ray_table[8][64];
+static const int ray_df[8] = {0, 1, 1, -1, 0, -1, 1, -1};
+static const int ray_dr[8] = {1, 0, 1, 1, -1, 0, -1, -1};
 static const char symbols[2][7] = {"PNBRQK", "pnbrqk"};
 
 #define BIT(sq) ((bb_t)1 << (sq))
+#define FILE_A ((bb_t)0x0101010101010101ULL)
+#define FILE_H ((bb_t)0x8080808080808080ULL)
+#define RANK_3 ((bb_t)0x0000000000FF0000ULL)
+#define RANK_6 ((bb_t)0x0000FF0000000000ULL)
 
 static int on_board(int file, int rank) { return file >= 0 && file < 8 && rank >= 0 && rank < 8; }
 
@@ -22,8 +32,69 @@ void fow_init(void) {
         for (int df = -1; df <= 1; ++df)
             for (int dr = -1; dr <= 1; ++dr)
                 if ((df || dr) && on_board(f + df, r + dr)) king_table[sq] |= BIT((r + dr) * 8 + f + df);
+        for (int color = 0; color < 2; ++color) {
+            const int dr = color == WHITE ? 1 : -1;
+            pawn_attack_table[color][sq] = 0;
+            if (on_board(f - 1, r + dr)) pawn_attack_table[color][sq] |= BIT((r + dr) * 8 + f - 1);
+            if (on_board(f + 1, r + dr)) pawn_attack_table[color][sq] |= BIT((r + dr) * 8 + f + 1);
+        }
+        for (int d = 0; d < 8; ++d) {
+            ray_table[d][sq] = 0;
+            for (int x = f + ray_df[d], y = r + ray_dr[d]; on_board(x, y); x += ray_df[d], y += ray_dr[d])
+                ray_table[d][sq] |= BIT(y * 8 + x);
+        }
     }
 }
+
+/* The ray from `sq` in direction `d` up to and including its first occupied square. */
+static bb_t ray_attacks(int sq, int d, bb_t occupied) {
+    const bb_t ray = ray_table[d][sq], block = ray & occupied;
+    if (!block) return ray;
+    const int first = d < 4 ? __builtin_ctzll(block) : 63 - __builtin_clzll(block);
+    return ray ^ ray_table[d][first];
+}
+
+static bb_t rook_attacks(int sq, bb_t occupied) {
+    return ray_attacks(sq, 0, occupied) | ray_attacks(sq, 1, occupied) | ray_attacks(sq, 4, occupied) | ray_attacks(sq, 5, occupied);
+}
+
+static bb_t bishop_attacks(int sq, bb_t occupied) {
+    return ray_attacks(sq, 2, occupied) | ray_attacks(sq, 3, occupied) | ray_attacks(sq, 6, occupied) | ray_attacks(sq, 7, occupied);
+}
+
+/* The squares all sliders in `gen` reach in one direction, up to and
+ * including the first occupied square (`empty` = the empty squares): a
+ * parallel-prefix flood in three doubling steps, the same answer as the ray
+ * scan for every slider at once. The wrap masks keep file shifts on the board. */
+#define FILL(name, shift_expr, mask)                                          \
+    static bb_t name(bb_t gen, bb_t empty) {                                 \
+        bb_t pro = empty & (mask);                                           \
+        gen |= pro & shift_expr(gen, 1);                                     \
+        pro &= shift_expr(pro, 1);                                           \
+        gen |= pro & shift_expr(gen, 2);                                     \
+        pro &= shift_expr(pro, 2);                                           \
+        gen |= pro & shift_expr(gen, 4);                                     \
+        return shift_expr(gen, 1) & (mask);                                  \
+    }
+#define SH_N(b, k) ((b) << (8 * (k)))
+#define SH_S(b, k) ((b) >> (8 * (k)))
+#define SH_E(b, k) ((b) << (k))
+#define SH_W(b, k) ((b) >> (k))
+#define SH_NE(b, k) ((b) << (9 * (k)))
+#define SH_NW(b, k) ((b) << (7 * (k)))
+#define SH_SE(b, k) ((b) >> (7 * (k)))
+#define SH_SW(b, k) ((b) >> (9 * (k)))
+/* masks: where a shifted square may land without wrapping; for the two- and
+ * four-step shifts the mask is applied to the propagator, which the macro
+ * narrows again at each doubling (pro &= shift(pro)) as the classic fill does */
+FILL(fill_n, SH_N, ~(bb_t)0)
+FILL(fill_s, SH_S, ~(bb_t)0)
+FILL(fill_e, SH_E, ~FILE_A)
+FILL(fill_w, SH_W, ~FILE_H)
+FILL(fill_ne, SH_NE, ~FILE_A)
+FILL(fill_nw, SH_NW, ~FILE_H)
+FILL(fill_se, SH_SE, ~FILE_A)
+FILL(fill_sw, SH_SW, ~FILE_H)
 
 void pos_clear(Position *p) {
     memset(p, 0, sizeof(*p));
@@ -82,42 +153,32 @@ int pos_matches_board_string(const Position *p, const char *text) {
     return 1;
 }
 
-static bb_t slide(const Position *p, int sq, const int dirs[4][2]) {
-    bb_t occupied = p->by_color[0] | p->by_color[1], out = 0;
-    int f0 = sq % 8, r0 = sq / 8;
-    for (int d = 0; d < 4; ++d) {
-        for (int f = f0 + dirs[d][0], r = r0 + dirs[d][1]; on_board(f, r); f += dirs[d][0], r += dirs[d][1]) {
-            out |= BIT(r * 8 + f);
-            if (occupied & BIT(r * 8 + f)) break;
-        }
-    }
-    return out;
-}
-
 bb_t attacks_from(const Position *p, int sq) {
-    int color = p->color[sq], f = sq % 8, r = sq / 8;
+    const bb_t occupied = p->by_color[0] | p->by_color[1];
     switch (p->piece[sq]) {
-        case PAWN: {
-            int dr = color == WHITE ? 1 : -1;
-            bb_t out = 0;
-            if (on_board(f - 1, r + dr)) out |= BIT((r + dr) * 8 + f - 1);
-            if (on_board(f + 1, r + dr)) out |= BIT((r + dr) * 8 + f + 1);
-            return out;
-        }
+        case PAWN: return pawn_attack_table[(int)p->color[sq]][sq];
         case KNIGHT: return knight_table[sq];
-        case BISHOP: return slide(p, sq, bishop_dirs);
-        case ROOK: return slide(p, sq, rook_dirs);
-        case QUEEN: return slide(p, sq, bishop_dirs) | slide(p, sq, rook_dirs);
+        case BISHOP: return bishop_attacks(sq, occupied);
+        case ROOK: return rook_attacks(sq, occupied);
+        case QUEEN: return bishop_attacks(sq, occupied) | rook_attacks(sq, occupied);
         case KING: return king_table[sq];
         default: return 0;
     }
 }
 
+/* From the target: a pawn of `by_color` attacks `sq` from where a pawn of the
+ * other colour on `sq` would capture; knights and kings by their tables;
+ * sliders along the rays from `sq`, which stop at the same blockers. */
 int is_attacked(const Position *p, int sq, int by_color) {
-    for (bb_t b = p->by_color[by_color]; b; b &= b - 1) {
-        int from = __builtin_ctzll(b);
-        if (attacks_from(p, from) & BIT(sq)) return 1;
-    }
+    const bb_t them = p->by_color[by_color];
+    if (pawn_attack_table[by_color ^ 1][sq] & p->by_type[PAWN] & them) return 1;
+    if (knight_table[sq] & p->by_type[KNIGHT] & them) return 1;
+    if (king_table[sq] & p->by_type[KING] & them) return 1;
+    const bb_t occupied = p->by_color[0] | p->by_color[1];
+    const bb_t rooks = (p->by_type[ROOK] | p->by_type[QUEEN]) & them;
+    if (rooks && (rook_attacks(sq, occupied) & rooks)) return 1;
+    const bb_t bishops = (p->by_type[BISHOP] | p->by_type[QUEEN]) & them;
+    if (bishops && (bishop_attacks(sq, occupied) & bishops)) return 1;
     return 0;
 }
 
@@ -218,18 +279,49 @@ int mover_left_king_capturable(const Position *p) {
     return k < 0 || is_attacked(p, k, p->side);
 }
 
+/* The squares `color` observes: its own pieces and the destinations of its
+ * legal moves (generate_moves, with en passant only for the side to move),
+ * plus the pawn an en passant capture would take. Computed as bitboards, in
+ * the same terms as the move generator: pawn pushes onto empty squares, a
+ * double push from the start rank through an empty square, pawn captures of
+ * enemy pieces or of the en passant square, the step and sliding attacks of
+ * the pieces, and the castling destinations. Own squares are seen anyway, so
+ * attacks on own pieces need no masking. */
 bb_t visible_squares(const Position *p, int color) {
-    Position view = *p;
-    if (color != p->side) view.ep = -1;
-    view.side = color;
-    MoveList l;
-    generate_moves(&view, &l);
-    bb_t seen = view.by_color[color];
-    for (int i = 0; i < l.count; ++i) {
-        int from = MOVE_FROM(l.moves[i]), to = MOVE_TO(l.moves[i]);
-        seen |= BIT(to);
-        if (view.piece[from] == PAWN && to == view.ep && view.piece[to] == NO_PIECE)
-            seen |= BIT(color == WHITE ? to - 8 : to + 8);
+    const bb_t own = p->by_color[color], enemy = p->by_color[color ^ 1], occupied = own | enemy;
+    const int ep = color == p->side ? p->ep : -1;
+    bb_t seen = own;
+    const bb_t pawns = p->by_type[PAWN] & own;
+    if (pawns) {
+        bb_t one, two, captures;
+        if (color == WHITE) {
+            one = (pawns << 8) & ~occupied;
+            two = ((one & RANK_3) << 8) & ~occupied;
+            captures = ((pawns & ~FILE_A) << 7) | ((pawns & ~FILE_H) << 9);
+        } else {
+            one = (pawns >> 8) & ~occupied;
+            two = ((one & RANK_6) >> 8) & ~occupied;
+            captures = ((pawns & ~FILE_A) >> 9) | ((pawns & ~FILE_H) >> 7);
+        }
+        seen |= one | two | (captures & enemy);
+        if (ep >= 0 && (captures & BIT(ep))) {
+            seen |= BIT(ep);
+            if (p->piece[ep] == NO_PIECE) seen |= BIT(color == WHITE ? ep - 8 : ep + 8);
+        }
+    }
+    for (bb_t b = p->by_type[KNIGHT] & own; b; b &= b - 1) seen |= knight_table[__builtin_ctzll(b)];
+    const bb_t empty = ~occupied, rooks = (p->by_type[ROOK] | p->by_type[QUEEN]) & own, bishops = (p->by_type[BISHOP] | p->by_type[QUEEN]) & own;
+    if (rooks) seen |= fill_n(rooks, empty) | fill_s(rooks, empty) | fill_e(rooks, empty) | fill_w(rooks, empty);
+    if (bishops) seen |= fill_ne(bishops, empty) | fill_nw(bishops, empty) | fill_se(bishops, empty) | fill_sw(bishops, empty);
+    for (bb_t b = p->by_type[KING] & own; b; b &= b - 1) seen |= king_table[__builtin_ctzll(b)];
+    const int home = color == WHITE ? 0 : 56, king = home + 4;
+    if (p->piece[king] == KING && p->color[king] == color) {
+        if ((p->castle_rooks & BIT(home + 7)) && p->piece[home + 7] == ROOK && p->color[home + 7] == color &&
+            !(occupied & (BIT(home + 5) | BIT(home + 6))))
+            seen |= BIT(home + 6);
+        if ((p->castle_rooks & BIT(home)) && p->piece[home] == ROOK && p->color[home] == color &&
+            !(occupied & (BIT(home + 1) | BIT(home + 2) | BIT(home + 3))))
+            seen |= BIT(home + 2);
     }
     return seen;
 }

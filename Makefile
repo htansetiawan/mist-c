@@ -32,8 +32,12 @@ build/test_front: $(SRC) tests/test_front.c src/front.h src/belief.h src/fow.h
 build/test_oracle: $(SRC) tests/test_oracle.c src/belief.h src/fow.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/test_oracle.c -lm -o $@
 
-test: build/test_rules build/test_belief build/test_cfr build/test_search build/test_guard build/test_front build/test_rule build/test_eval build/test_sf build/test_oracle
+build/test_bb: $(SRC) tests/test_bb.c tests/ref_board.c src/fow.h
+	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tests/ref_board.c tests/test_bb.c -lm -o $@
+
+test: build/test_rules build/test_bb build/test_belief build/test_cfr build/test_search build/test_guard build/test_front build/test_rule build/test_eval build/test_sf build/test_oracle
 	./build/test_rules tests/vectors.txt
+	./build/test_bb tests/vectors.txt tests/traces.txt
 	./build/test_oracle
 	./build/test_guard tests/traces.txt
 	./build/test_front
