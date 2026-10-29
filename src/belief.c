@@ -621,6 +621,41 @@ size_t belief_keep_board(Belief *b, const char *board, const Position *fallback)
     return matched;
 }
 
+size_t belief_force_board_share(Belief *b, const char *board, const Position *fallback, double share, double *natural) {
+    double total = 0, mine = 0;
+    size_t matched = 0;
+    for (size_t i = 0; i < b->count; ++i) {
+        const double w = b->logw ? exp((double)b->logw[i]) : 1.0;
+        total += w;
+        if (pos_matches_board_string(&b->items[i], board)) { mine += w; ++matched; }
+    }
+    if (natural) *natural = total > 0 ? mine / total : 0;
+    if (share <= 0 || share >= 1) return matched;
+    if (matched == 0 && !fallback) return 0;
+    const double others = total - mine;
+    if (!b->logw) b->logw = calloc(b->capacity > b->count ? b->capacity : b->count + 1, sizeof(float));
+    if (matched == 0) {
+        if (b->count + 1 > b->capacity) {
+            const size_t cap = b->capacity ? b->capacity * 2 : 1;
+            b->items = realloc(b->items, cap * sizeof(Position));
+            if (b->hist) b->hist = realloc(b->hist, cap * sizeof(uint64_t));
+            b->logw = realloc(b->logw, cap * sizeof(float));
+            b->capacity = cap;
+        }
+        b->items[b->count] = *fallback;
+        if (b->hist) b->hist[b->count] = 0;
+        /* a weight w with w / (w + others) = share */
+        b->logw[b->count] = others > 0 ? (float)log(share / (1 - share) * others) : 0.0f;
+        b->count += 1;
+        return 0;
+    }
+    if (others <= 0) return matched;   /* P holds the truth alone: the share is 1 already */
+    const float shift = (float)log(share / (1 - share) * others / mine);
+    for (size_t i = 0; i < b->count; ++i)
+        if (pos_matches_board_string(&b->items[i], board)) b->logw[i] += shift;
+    return matched;
+}
+
 int belief_contains(const Belief *b, const Position *p) {
     uint64_t key = position_key(p);
     for (size_t i = 0; i < b->count; ++i)

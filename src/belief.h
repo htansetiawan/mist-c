@@ -59,6 +59,13 @@ size_t belief_shrink(Belief *b, size_t target);
  * whose placement is `board` (64 chars, a1..h8); when none is left, P becomes
  * `fallback` alone (NULL: P stays empty). Returns how many worlds matched. */
 size_t belief_keep_board(Belief *b, const char *board, const Position *fallback);
+/* Oracle sharpness (main.c, MIST_ORACLE_SHARE; local experiments only): the
+ * worlds whose placement is `board` take the weight share `share` of P and
+ * the others keep their proportions; when none has it, `fallback` is appended
+ * and takes the share (NULL: P is left alone). A `share` of 0 only measures.
+ * `*natural` receives the share those worlds held before. Returns how many
+ * worlds matched. */
+size_t belief_force_board_share(Belief *b, const char *board, const Position *fallback, double share, double *natural);
 int belief_contains(const Belief *b, const Position *p);
 /* The weight share of `p` in P (0 if absent). */
 double belief_share(const Belief *b, const Position *p);

@@ -248,7 +248,12 @@ static void truth_report(const Belief *b, const char *seq, int view_index) {
  * square or ->". P is collapsed to the worlds with that placement, or to the
  * file's position when P has lost it. The same search on a correct belief:
  * what belief work is worth at most (docs/top3-reanalysis-20261027.md). */
-static int oracle_collapse(Belief *b, const char *path, int us, int view_index) {
+/* MIST_ORACLE_SHARE (with the file): unset or 1 and above collapses P to the
+ * truth as above; a share in (0, 1) keeps the sampled belief and forces the
+ * true world to that share of its weight (added when P has lost it); 0 only
+ * logs the truth's natural share. The sharpness curve: how much weight the
+ * truth needs before the search converts. */
+static int oracle_collapse(Belief *b, const char *path, int us, int view_index, double share) {
     FILE *f = fopen(path, "r");
     if (!f) { fprintf(stderr, "mist: oracle v=%d file missing, belief kept\n", view_index); return 0; }
     char board[80] = "", side[4] = "", castle[8] = "", ep[8] = "";
@@ -271,8 +276,20 @@ static int oracle_collapse(Belief *b, const char *path, int us, int view_index) 
         return 0;
     }
     const size_t before = b->count;
-    const size_t matched = belief_keep_board(b, board, &truth);
-    fprintf(stderr, "mist: oracle v=%d |P| %zu -> %zu (%s)\n", view_index, before, b->count, matched ? "truth in P" : "truth placed");
+    if (share < 0 || share >= 1) {
+        const size_t matched = belief_keep_board(b, board, &truth);
+        fprintf(stderr, "mist: oracle v=%d |P| %zu -> %zu (%s)\n", view_index, before, b->count, matched ? "truth in P" : "truth placed");
+        return 1;
+    }
+    double natural = 0;
+    const size_t matched = belief_force_board_share(b, board, share > 0 ? &truth : NULL, share, &natural);
+    if (share > 0) {
+        double forced = 0;
+        belief_force_board_share(b, board, NULL, 0, &forced);
+        fprintf(stderr, "mist: oracle v=%d |P|=%zu natural=%.5f forced=%.5f (%s)\n", view_index, b->count, natural, forced, matched ? "truth in P" : "truth placed");
+    } else {
+        fprintf(stderr, "mist: oracle v=%d |P|=%zu natural=%.5f observed (%s)\n", view_index, b->count, natural, matched ? "truth in P" : "truth lost");
+    }
     return 1;
 }
 
@@ -474,7 +491,13 @@ int main(void) {
     const char *forced = getenv("MIST_FORCE_MOVES");
     const char *truth_seq = getenv("MIST_TRUTH_SEQ");
     const char *oracle_file = getenv("MIST_ORACLE_FILE");
-    if (oracle_file && *oracle_file) fprintf(stderr, "mist: ORACLE belief from %s (local experiment)\n", oracle_file);
+    const char *oracle_share_text = getenv("MIST_ORACLE_SHARE");
+    const double oracle_share = oracle_share_text && *oracle_share_text ? strtod(oracle_share_text, NULL) : -1;
+    if (oracle_file && *oracle_file) {
+        if (oracle_share < 0 || oracle_share >= 1) fprintf(stderr, "mist: ORACLE belief from %s (local experiment)\n", oracle_file);
+        else if (oracle_share > 0) fprintf(stderr, "mist: ORACLE truth share %.3f from %s (local experiment)\n", oracle_share, oracle_file);
+        else fprintf(stderr, "mist: ORACLE truth share observed from %s (local experiment)\n", oracle_file);
+    }
     /* MIST_STOCKFISH=path: Stockfish scores the search's leaves (paper, 3.3) */
     if (getenv("MIST_STOCKFISH") && *getenv("MIST_STOCKFISH"))
         fprintf(stderr, "mist: stockfish %s\n", sf_start(getenv("MIST_STOCKFISH")) ? "ready" : "failed to start; our evaluator scores the leaves");
@@ -529,7 +552,7 @@ int main(void) {
         /* our turn; the clock ran while we updated P. A larger sample of P
          * when there is time for it */
         const double remaining = reported - (now_seconds() - view_at);
-        if (oracle_file && *oracle_file) oracle_collapse(&b, oracle_file, us, views - 1);
+        if (oracle_file && *oracle_file) oracle_collapse(&b, oracle_file, us, views - 1, oracle_share);
         const double budget = move_budget(remaining, increment, max_seconds);
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
         if (remaining < 20) { sp.samples = 32; sp.iterations = 60; sp.seconds = 0.3; }
