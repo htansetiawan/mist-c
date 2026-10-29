@@ -29,7 +29,10 @@ enum {
  * last move (0 if unknown), for recaptures. `full` adds the attack features
  * (MM_CHECK..MM_XRAY_KING), which cost attack tests. */
 void move_features(const Position *p, Move m, Move previous, int full, float out[MM_FEATURES]);
-/* theta . phi for every move of `l` (the full or the cheap model's theta). */
+/* The piece-square tables (movemodel_theta.h) are written for White; a Black
+ * mover's squares are mirrored by rank. */
+static inline int move_mirror_square(int mover, int sq) { return mover == WHITE ? sq : sq ^ 56; }
+/* theta . phi plus the piece-square terms, for every move of `l`. */
 void move_logits(const Position *p, const MoveList *l, Move previous, int full, float *out);
 
 #endif

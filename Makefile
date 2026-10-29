@@ -54,5 +54,5 @@ clean:
 build/history_table: $(SRC) tools/history_table.c src/belief.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tools/history_table.c -lm -o $@
 
-build/move_features: $(SRC) tools/move_features.c src/movemodel.h
+build/move_features: $(SRC) tools/move_features.c src/movemodel.h src/movemodel_theta.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) tools/move_features.c -lm -o $@

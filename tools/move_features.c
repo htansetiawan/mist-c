@@ -1,7 +1,9 @@
 /* Exports move-model training data: for every position where the mover's
  * moves are used, the features of each legal move and which one was played.
  * Input: tools/export_moves.py output. Output (binary, little-endian):
- * int32 F; then per position: int32 n, int32 played, int32 mover_id, float32 x[n][F].
+ * int32 F; then per position: int32 n, int32 played, int32 mover_id, float32 x[n][F],
+ * where F = MM_FEATURES + 3: the dense features, then the moved piece type and the
+ * mirrored from and to squares (movemodel.h) for the piece-square tables.
  * Mover names are listed on stderr as "mover <id> <name>".
  *
  *   build/move_features arena-train.txt out.bin [full=1]
@@ -24,7 +26,8 @@ int main(int argc, char **argv) {
     fow_init();
     FILE *in = fopen(argv[1], "r"), *out = fopen(argv[2], "wb");
     if (!in || !out) { perror("open"); return 2; }
-    const int F = MM_FEATURES;
+    /* dense features, then the moved piece type and its mirrored from and to squares (as floats) */
+    const int F = MM_FEATURES + 3;
     fwrite(&F, 4, 1, out);
     char names[64][64]; int n_names = 0;
     static char line[1 << 16];
@@ -51,7 +54,13 @@ int main(int argc, char **argv) {
             if (played < 0) { ++bad; break; }
             if (ids[p.side] >= 0) {
                 MoveList l; generate_moves(&p, &l);
-                for (int i = 0; i < l.count; ++i) move_features(&p, l.moves[i], previous, full, x + (size_t)i * F);
+                for (int i = 0; i < l.count; ++i) {
+                    float *xi = x + (size_t)i * F;
+                    move_features(&p, l.moves[i], previous, full, xi);
+                    xi[MM_FEATURES] = (float)p.piece[MOVE_FROM(l.moves[i])];
+                    xi[MM_FEATURES + 1] = (float)move_mirror_square(p.side, MOVE_FROM(l.moves[i]));
+                    xi[MM_FEATURES + 2] = (float)move_mirror_square(p.side, MOVE_TO(l.moves[i]));
+                }
                 const int head[3] = {l.count, played, ids[p.side]};
                 fwrite(head, 4, 3, out);
                 fwrite(x, sizeof(float), (size_t)l.count * F, out);

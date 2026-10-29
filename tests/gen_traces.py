@@ -1,6 +1,6 @@
 """Belief traces from real arena games (milestone M2), from our side's point of view.
 
-    IAMAVIRUS_ROOT=~/git/iamavirus python tests/gen_traces.py 40 > tests/traces.txt
+    IAMAVIRUS_ROOT=~/git/iamavirus python tests/gen_traces.py 40 [versions, e.g. 35] > tests/traces.txt
 
 Per game: "game <id> <w|b>", then per ply: "<us|them> <uci> <our view> <true board> <side> <castle mask> <ep>".
 """
@@ -10,11 +10,13 @@ sys.path.insert(0, root)
 from learning import rules
 
 limit = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+# our arena versions to take games from (default the M2-era 20 and 21), e.g. "35"
+versions = tuple(int(v) for v in sys.argv[2].split(",")) if len(sys.argv) > 2 else (20, 21)
 done = 0
 for path in sorted(glob.glob(os.path.join(root, "data/raw/games/*/listing.json"))):
     l = json.load(open(path))
     for side, color in (("white", 0), ("black", 1)):
-        if l.get(side) != "IAmAVirus" or l.get(f"{side}Version") not in (20, 21):
+        if l.get(side) != "IAmAVirus" or l.get(f"{side}Version") not in versions:
             continue
         r = json.load(open(path.replace("listing.json", "replay.json")))
         moves = [f["move"] for f in r["frames"][1:] if f["move"]]

@@ -3,6 +3,8 @@
 
 #include <string.h>
 
+#include "movemodel_theta.h"
+
 static const float value[6] = {1, 3, 3, 5, 9, 0};
 
 /* Fitted by tools/fit_move_model.py on 2,029 arena games from 2026-09-30 to
@@ -10,16 +12,19 @@ static const float value[6] = {1, 3, 3, 5, 9, 0};
  * baseline.py). On 371 held-out games (25,678 moves) the full model gains
  * 0.658 nats per move over uniform (top-1 27.4%; 0.631 before the undefended,
  * king-zone and x-ray features), the cheap one 0.493 (25.6%). */
-static const float theta_full[MM_FEATURES] = {1.0883f, 4.2173f, 0.0000f, -0.5976f, -0.7174f, -0.2331f, -0.4542f, -0.3852f, 0.1103f, 2.3662f, 1.6652f, -0.5344f, -0.8673f, -0.1008f, 0.8894f, 1.5612f, 1.4574f, 1.1427f, 0.7011f, 1.0507f, -0.1183f, -1.2109f, -2.5556f, -2.4094f, 0.3295f, 0.2615f, 0.0000f, 0.0000f};
-static const float theta_cheap[MM_FEATURES] = {0.7705f, 3.6690f, 0.0000f, -0.5296f, -0.6920f, -0.2792f, -0.7406f, -0.4606f, 0.1304f, 2.3256f, 1.3647f, -0.6156f, -1.4760f, -0.1127f, 0.7298f, 1.5767f, 1.6693f, 1.0416f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f};
 
 void move_logits(const Position *p, const MoveList *l, Move previous, int full, float *out) {
     const float *theta = full ? theta_full : theta_cheap;
+    const float (*pf)[64] = full ? pst_from_full : pst_from_cheap;
+    const float (*pt)[64] = full ? pst_to_full : pst_to_cheap;
     float x[MM_FEATURES];
     for (int i = 0; i < l->count; ++i) {
-        move_features(p, l->moves[i], previous, full, x);
+        const Move m = l->moves[i];
+        move_features(p, m, previous, full, x);
         float z = 0;
         for (int k = 0; k < MM_FEATURES; ++k) z += theta[k] * x[k];
+        const int type = p->piece[MOVE_FROM(m)];
+        z += pf[type][move_mirror_square(p->side, MOVE_FROM(m))] + pt[type][move_mirror_square(p->side, MOVE_TO(m))];
         out[i] = z;
     }
 }
