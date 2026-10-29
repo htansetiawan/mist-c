@@ -29,6 +29,8 @@ int main(int argc, char **argv) {
     double sum_log_share = 0, sum_log_uniform = 0, in_sample = 0; long shared = 0;
     uint64_t rng = 12345; int idx[256]; double prob[256];
     int game_overflowed = 0;
+    const int checksum_on = getenv("FOW_CHECKSUM") != NULL;   /* prints a hash of every P (see below) */
+    uint64_t checksum = 0;
     while (fgets(line, sizeof line, f)) {
         if (strncmp(line, "game ", 5) == 0) {
             char id[64], side[4];
@@ -53,6 +55,18 @@ int main(int argc, char **argv) {
         }
         double dt = now() - t0;
         if (getenv("FOW_VERBOSE")) fprintf(stderr, "    %s %s -> |P| %zu in %.3f s%s\n", who, uci, b.count, dt, b.overflowed ? " (capped)" : "");
+        if (checksum_on) {
+            /* every position of P in order, with its history and the exact bits of
+             * its log-weight: two builds agree on this only if their beliefs are
+             * bit-identical after every update */
+            for (size_t i = 0; i < b.count; ++i) {
+                uint32_t bits = 0; if (b.logw) memcpy(&bits, &b.logw[i], sizeof bits);
+                checksum = history_mix(checksum, position_key(&b.items[i]));
+                checksum = history_mix(checksum, b.hist ? b.hist[i] : 0);
+                checksum = history_mix(checksum, bits);
+            }
+            checksum = history_mix(checksum, b.count);
+        }
         Position truth;
         pos_from_board_string(&truth, board, side, castle, ep);
         ++plies;
@@ -89,5 +103,6 @@ int main(int argc, char **argv) {
     if (shared)
         printf("truth's weight share while exact (|P| > 1, %ld plies): geometric mean %.4f vs uniform %.4f (x%.1f); in a 64-world sample %.1f%%\n",
                shared, exp(sum_log_share / shared), exp(sum_log_uniform / shared), exp((sum_log_share - sum_log_uniform) / shared), 100.0 * in_sample / shared);
+    if (checksum_on) printf("belief checksum %016" PRIx64 " (positions, histories and log-weight bits after every update)\n", checksum);
     return unsound ? 1 : 0;
 }

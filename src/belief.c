@@ -284,6 +284,30 @@ static int by_key(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+/* Candidates in key order, equal keys in their original order (a stable
+ * sort, as the C library's merge sort is): four counting passes over 16-bit
+ * digits, each skipped when every key shares it. Falls back to qsort when
+ * the scratch space cannot be had. */
+static void sort_candidates(Candidate *c, size_t n) {
+    if (n < 2) return;
+    Candidate *tmp = malloc(n * sizeof(Candidate));
+    size_t *count = malloc((65536 + 1) * sizeof(size_t));
+    if (!tmp || !count) { free(tmp); free(count); qsort(c, n, sizeof(Candidate), by_key); return; }
+    Candidate *src = c, *dst = tmp;
+    for (int shift = 0; shift < 64; shift += 16) {
+        memset(count, 0, (65536 + 1) * sizeof(size_t));
+        for (size_t i = 0; i < n; ++i) ++count[((src[i].key >> shift) & 0xFFFF) + 1];
+        int same = 0;
+        for (int d = 1; d <= 65536; ++d) if (count[d] == n) { same = 1; break; }
+        if (same) continue;
+        for (int d = 1; d <= 65536; ++d) count[d] += count[d - 1];
+        for (size_t i = 0; i < n; ++i) dst[count[(src[i].key >> shift) & 0xFFFF]++] = src[i];
+        Candidate *t = src; src = dst; dst = t;
+    }
+    if (src != c) memcpy(c, src, n * sizeof(Candidate));
+    free(tmp); free(count);
+}
+
 typedef struct { double key; uint32_t index; } Ranked;
 
 static int by_index_u32(const void *a, const void *b) {
@@ -313,10 +337,15 @@ typedef struct {
     unsigned long lookups, hits;
 } OppPass1;
 
+/* Does our view of `p` equal the view received? `may_match` has already
+ * checked every square the view shows (empty squares empty, our pieces
+ * exactly, their pieces on the known squares), so the views are equal iff
+ * the squares we see in `p` are exactly the view's known squares. */
+static int view_equal(const Position *p, const ViewMasks *m, int us) { return visible_squares(p, us) == m->known; }
+
 static void *opp_pass1(void *arg) {
     OppPass1 *w = arg;
     const Belief *b = w->b;
-    char seen[65];
     float logit[256];
     for (size_t i = w->lo; i < w->hi; ++i) {
         Position p = b->items[i];
@@ -324,44 +353,44 @@ static void *opp_pass1(void *arg) {
         generate_moves(&p, &l);
         float log_z = 0;
         unsigned hc[256], N = 0;
-        if (model_on) {
-            move_logits(&p, &l, b->last_own, w->full, logit);
-            float top = -INFINITY;
-            for (int j = 0; j < l.count; ++j) if (logit[j] > top) top = logit[j];
-            double z = 0;
-            for (int j = 0; j < l.count; ++j) z += exp((double)(logit[j] - top));
-            log_z = top + (float)log(z);
-            if (hist_table) {
-                ++w->lookups;
-                N = history_counts(b->hist ? b->hist[i] : 0, &l, hc);
-                if (N < hist_min) N = 0; else ++w->hits;
-            }
-        }
+        int scored = 0;   /* the model is run when the first consistent successor appears */
         const float base = b->logw ? b->logw[i] : 0.0f;
         for (int j = 0; j < l.count; ++j) {
             Undo u;
             make_move(&p, l.moves[j], &u);
             /* the referee ends the game on a move that leaves the mover's king capturable */
-            if (may_match(&p, w->vm, b->us) && !(prune_capturable && mover_left_king_capturable(&p))) {
-                observation(&p, b->us, seen);
-                if (memcmp(seen, w->view, 64) == 0) {
-                    if (w->n == w->cap) { w->cap = w->cap ? 2 * w->cap : 1 << 14; w->cand = realloc(w->cand, w->cap * sizeof(Candidate)); }
-                    Candidate *c = &w->cand[w->n++];
-                    c->key = position_key(&p);
-                    c->parent = (uint32_t)i;
-                    c->move = l.moves[j];
-                    /* tempered log-likelihood: the belief is weight^temp of the fitted
-                     * one up to merges; the king guard recovers the fitted weighting as
-                     * weight^(1/temp) for its calibrated rule (main.c) */
-                    c->logw = base + (!model_on ? 0.0f : N > 0
-                        ? model_temp * logf(((float)hc[j] + hist_n0 * expf(logit[j] - log_z)) / ((float)N + hist_n0))
-                        : model_temp * (logit[j] - log_z));
+            if (may_match(&p, w->vm, b->us) && !(prune_capturable && mover_left_king_capturable(&p)) && view_equal(&p, w->vm, b->us)) {
+                if (model_on && !scored) {
+                    /* the parent's moves scored over ALL its legal moves, whichever survive */
+                    scored = 1;
+                    move_logits(&b->items[i], &l, b->last_own, w->full, logit);
+                    float top = -INFINITY;
+                    for (int k = 0; k < l.count; ++k) if (logit[k] > top) top = logit[k];
+                    double z = 0;
+                    for (int k = 0; k < l.count; ++k) z += exp((double)(logit[k] - top));
+                    log_z = top + (float)log(z);
+                    if (hist_table) {
+                        ++w->lookups;
+                        N = history_counts(b->hist ? b->hist[i] : 0, &l, hc);
+                        if (N < hist_min) N = 0; else ++w->hits;
+                    }
                 }
+                if (w->n == w->cap) { w->cap = w->cap ? 2 * w->cap : 1 << 14; w->cand = realloc(w->cand, w->cap * sizeof(Candidate)); }
+                Candidate *c = &w->cand[w->n++];
+                c->key = position_key(&p);
+                c->parent = (uint32_t)i;
+                c->move = l.moves[j];
+                /* tempered log-likelihood: the belief is weight^temp of the fitted
+                 * one up to merges; the king guard recovers the fitted weighting as
+                 * weight^(1/temp) for its calibrated rule (main.c) */
+                c->logw = base + (!model_on ? 0.0f : N > 0
+                    ? model_temp * logf(((float)hc[j] + hist_n0 * expf(logit[j] - log_z)) / ((float)N + hist_n0))
+                    : model_temp * (logit[j] - log_z));
             }
             unmake_move(&p, l.moves[j], &u);
         }
     }
-    if (w->n > 1) qsort(w->cand, w->n, sizeof(Candidate), by_key);   /* the threads' runs merge in order */
+    if (w->n > 1) sort_candidates(w->cand, w->n);   /* the threads' runs merge in order */
     return NULL;
 }
 
@@ -508,7 +537,7 @@ typedef struct {
 static void *own_pass(void *arg) {
     OwnPass *w = arg;
     const Belief *b = w->b;
-    char seen[65], theirs[65];
+    char theirs[65];
     for (size_t i = w->lo; i < w->hi; ++i) {
         Position p = b->items[i];
         Undo u;
@@ -517,8 +546,7 @@ static void *own_pass(void *arg) {
         /* the referee ends the game on a move that leaves the mover's king
          * capturable: the game went on, so our move did not */
         if (prune_capturable && mover_left_king_capturable(&p)) continue;
-        observation(&p, b->us, seen);
-        if (memcmp(seen, w->view, 64) != 0) continue;
+        if (!view_equal(&p, w->vm, b->us)) continue;
         /* the opponent does not see our move, only its view after it */
         observation(&p, b->us ^ 1, theirs);
         const uint64_t h = history_mix(b->hist ? b->hist[i] : 0, view_hash(theirs));
