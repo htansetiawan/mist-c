@@ -18,9 +18,10 @@ void move_logits(const Position *p, const MoveList *l, Move previous, int full, 
     const float (*pf)[64] = full ? pst_from_full : pst_from_cheap;
     const float (*pt)[64] = full ? pst_to_full : pst_to_cheap;
     float x[MM_FEATURES];
+    const bb_t vis = full ? visible_squares(p, p->side) : 0;
     for (int i = 0; i < l->count; ++i) {
         const Move m = l->moves[i];
-        move_features(p, m, previous, full, x);
+        move_features_obs(p, m, previous, full, vis, x);
         float z = 0;
         for (int k = 0; k < MM_FEATURES; ++k) z += theta[k] * x[k];
         const int type = p->piece[MOVE_FROM(m)];
@@ -30,6 +31,35 @@ void move_logits(const Position *p, const MoveList *l, Move previous, int full, 
 }
 
 void move_features(const Position *p, Move m, Move previous, int full, float out[MM_FEATURES]) {
+    move_features_obs(p, m, previous, full, full ? visible_squares(p, p->side) : 0, out);
+}
+
+#define BIT(sq) (1ULL << (sq))
+
+/* Is `sq` attacked in `q` by a piece of `by` standing on a square in `vis`? */
+static int attacked_from_visible(const Position *q, int sq, int by, bb_t vis) {
+    for (bb_t b = q->by_color[by] & vis; b; b &= b - 1)
+        if (attacks_from(q, __builtin_ctzll(b)) & BIT(sq)) return 1;
+    return 0;
+}
+
+static int chebyshev(int a, int b) {
+    const int df = (a & 7) - (b & 7), dr = (a >> 3) - (b >> 3);
+    const int x = df < 0 ? -df : df, y = dr < 0 ? -dr : dr;
+    return x > y ? x : y;
+}
+
+/* Distance from `sq` to the nearest piece of `color` on a square in `vis`; -1 if none. */
+static int nearest_visible(const Position *q, int sq, int color, bb_t vis) {
+    int best = -1;
+    for (bb_t b = q->by_color[color] & vis; b; b &= b - 1) {
+        const int d = chebyshev(sq, __builtin_ctzll(b));
+        if (best < 0 || d < best) best = d;
+    }
+    return best;
+}
+
+void move_features_obs(const Position *p, Move m, Move previous, int full, bb_t vis, float out[MM_FEATURES]) {
     memset(out, 0, sizeof(float) * MM_FEATURES);
     const int from = MOVE_FROM(m), to = MOVE_TO(m), promo = MOVE_PROMO(m);
     const int mover = p->side, type = p->piece[from];
@@ -79,6 +109,38 @@ void move_features(const Position *p, Move m, Move previous, int full, float out
     if (own_king >= 0 && is_attacked(&q, own_king, other)) out[MM_SELF_CAPTURABLE] = 1;
     /* hanging: attacked and not defended */
     if (out[MM_INTO_ATTACK] > 0 && !is_attacked(&q, to, mover)) out[MM_UNDEFENDED] = out[MM_HANG_VALUE];
+    /* the mover's own view: `vis` is what it sees before the move */
+    if (out[MM_ESCAPE] > 0 && attacked_from_visible(p, from, other, vis)) out[MM_OBS_ESCAPE_SEEN] = 1;
+    if (out[MM_INTO_ATTACK] > 0) {
+        if (attacked_from_visible(&q, to, other, vis)) {
+            out[MM_OBS_INTO_ATTACK_SEEN] = 1;
+            out[MM_OBS_HANG_SEEN] = out[MM_HANG_VALUE];
+            if (captured != NO_PIECE) out[MM_OBS_CAPTURE_DEFENDED_SEEN] = 1;
+        } else if (captured != NO_PIECE) out[MM_OBS_CAPTURE_DEFENDED_UNSEEN] = 1;
+    }
+    if (out[MM_SELF_CAPTURABLE] > 0 && attacked_from_visible(&q, own_king, other, vis)) out[MM_OBS_SELF_CAPTURABLE_SEEN] = 1;
+    {
+        const bb_t targets = attacks_from(&q, to) & q.by_color[other] & vis;
+        for (bb_t b = targets; b; b &= b - 1) {
+            const int sq = __builtin_ctzll(b);
+            if (q.piece[sq] != PAWN && q.piece[sq] != KING) {
+                out[MM_OBS_THREAT_SEEN] = 1;
+                if (value[q.piece[sq]] / 9.0f > out[MM_OBS_THREAT_SEEN_VALUE]) out[MM_OBS_THREAT_SEEN_VALUE] = value[q.piece[sq]] / 9.0f;
+            }
+        }
+        {
+            /* squares the mover does not see from which a queen or a knight could reach `to` */
+            Position r = q;
+            pos_remove(&r, to); pos_put(&r, to, mover, QUEEN);
+            bb_t reach = attacks_from(&r, to);
+            pos_remove(&r, to); pos_put(&r, to, mover, KNIGHT);
+            reach |= attacks_from(&r, to);
+            out[MM_OBS_FOG_EXPOSURE] = (float)__builtin_popcountll(reach & ~vis) / 27.0f;
+        }
+        const int before = nearest_visible(p, from, other, vis), after = nearest_visible(p, to, other, vis);
+        if (before >= 0 && after >= 0) out[MM_OBS_APPROACH_SEEN] = (float)(before - after) / 7.0f;
+        out[MM_OBS_REVEAL] = (float)__builtin_popcountll(visible_squares(&q, mover) & ~vis) / 16.0f;
+    }
     if (their_king < 0) return;
     /* pressure next to their king, and a line through one of their pieces to
      * it (a pin or skewer: the threats a hidden piece prepares) */

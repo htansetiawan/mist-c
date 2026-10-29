@@ -54,9 +54,10 @@ int main(int argc, char **argv) {
             if (played < 0) { ++bad; break; }
             if (ids[p.side] >= 0) {
                 MoveList l; generate_moves(&p, &l);
+                const bb_t vis = full ? visible_squares(&p, p.side) : 0;
                 for (int i = 0; i < l.count; ++i) {
                     float *xi = x + (size_t)i * F;
-                    move_features(&p, l.moves[i], previous, full, xi);
+                    move_features_obs(&p, l.moves[i], previous, full, vis, xi);
                     xi[MM_FEATURES] = (float)p.piece[MOVE_FROM(l.moves[i])];
                     xi[MM_FEATURES + 1] = (float)move_mirror_square(p.side, MOVE_FROM(l.moves[i]));
                     xi[MM_FEATURES + 2] = (float)move_mirror_square(p.side, MOVE_TO(l.moves[i]));
