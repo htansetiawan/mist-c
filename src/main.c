@@ -552,6 +552,11 @@ int main(void) {
         /* our turn; the clock ran while we updated P. A larger sample of P
          * when there is time for it */
         const double remaining = reported - (now_seconds() - view_at);
+        if (truth_seq && views > 1) {   /* diagnostics: let the search report whether the true board was sampled */
+            const char *tb = truth_seq;
+            for (int i = 0; i < views - 1 && tb; ++i) { tb = strchr(tb, ','); if (tb) ++tb; }
+            if (tb && strlen(tb) >= 64) { static char truth_board[65]; memcpy(truth_board, tb, 64); truth_board[64] = 0; gtcfr_truth_board = truth_board; }
+        }
         if (oracle_file && *oracle_file) oracle_collapse(&b, oracle_file, us, views - 1, oracle_share);
         const double budget = move_budget(remaining, increment, max_seconds);
         SearchParams sp = {budget >= 3.0 ? 256 : 128, 2000, seed + (unsigned long long)decisions, budget * 0.6, 0};
