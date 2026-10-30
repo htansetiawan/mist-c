@@ -50,6 +50,9 @@ test: build/test_rules build/test_bb build/test_belief build/test_cfr build/test
 	./build/test_cfr
 	./build/test_search tests/traces.txt 3 25
 
+build/hazard_calib: $(SRC) $(MODEL) tools/hazard_calib.c src/fow.h src/belief.h
+	mkdir -p build && $(CC) $(CFLAGS) -D_POSIX_C_SOURCE=199309L $(SRC) tools/hazard_calib.c -lm -o $@
+
 build/mist: $(SRC) $(MODEL) src/main.c src/search.h src/cfr.h src/belief.h src/fow.h src/eval.h src/front.h
 	mkdir -p build && $(CC) $(CFLAGS) $(SRC) src/main.c -lm -o $@
 
