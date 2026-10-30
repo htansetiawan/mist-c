@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
     if (!f) { perror(path); return 2; }
     fow_init(); zobrist_init();
     const double temp = belief_temperature();
-    printf("game\tply\tside\tmove\tpiece\tcapture_truth\tcapture_seen\tplayed\tP\tcapped\tworlds\tp_fitted\tp_sharp\tp_uniform\ttruth\ttruth_share\tq_fitted\tq_sharp\tq_uniform\ttruth_clean\tdefended_truth\tmin_att_truth\tmaterial_before\n");
+    printf("game\tply\tside\tmove\tpiece\tcapture_truth\tcapture_seen\tplayed\tP\tcapped\tworlds\tp_fitted\tp_sharp\tp_uniform\ttruth\ttruth_share\tq_fitted\tq_sharp\tq_uniform\ttruth_clean\tdefended_truth\tmin_att_truth\tmaterial_before\tu_fitted\tu_sharp\tu_uniform\ttruth_undefended\n");
     char line[512], id[64] = "";
     Belief b = {0}; Position truth_before; int have = 0, games = 0, skip = 0, us = WHITE; long ply = 0, decisions = 0, rows = 0;
     char last_view[65] = ""; int have_view = 0;
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
                     const int pt = b.items[0].piece[MOVE_FROM(c)];
                     if (pt != KNIGHT && pt != BISHOP && pt != ROOK && pt != QUEEN) continue;
                     const int pv = VALUE[pt];
-                    double t1 = 0, l1 = 0, tt = 0, lt = 0, tu = 0, lu = 0, c1 = 0, ct = 0, cu = 0; long worlds = 0;
+                    double t1 = 0, l1 = 0, tt = 0, lt = 0, tu = 0, lu = 0, c1 = 0, ct = 0, cu = 0, d1 = 0, dt = 0, du = 0; long worlds = 0;
                     for (size_t i = 0; i < b.count; i += stride) {
                         const double lw = b.logw ? (double)b.logw[i] : 0.0;
                         const double wt = exp(lw), w1 = exp(lw / temp);
@@ -101,18 +101,21 @@ int main(int argc, char **argv) {
                         t1 += w1; tt += wt; tu += 1; ++worlds;
                         if (hit) { l1 += w1; lt += wt; lu += 1; }
                         if (clean) { c1 += w1; ct += wt; cu += 1; }
+                        if (hit && !df) { d1 += w1; dt += wt; du += 1; }
                     }
                     int ma_t, df_t;
                     const int truth = fog_hazard(&truth_before, c, us, cur, &ma_t, &df_t);
                     const int truth_clean = truth && (!df_t || ma_t < pv);
+                    const int truth_undef = truth && !df_t;
                     const int to = MOVE_TO(c);
                     const int cap_truth = truth_before.color[to] == !us;
                     const int cap_seen = cur[to] != '?' && cur[to] != '-';
                     int mat = 0; for (int sq = 0; sq < 64; ++sq) if (truth_before.piece[sq] != NO_PIECE) mat += (truth_before.color[sq] == us ? 1 : -1) * VALUE[truth_before.piece[sq]];
                     char u[6]; move_to_uci(c, u);
-                    printf("%s\t%ld\t%c\t%s\t%c\t%d\t%d\t%d\t%zu\t%d\t%ld\t%.6f\t%.6f\t%.6f\t%d\t%.6g\t%.6f\t%.6f\t%.6f\t%d\t%d\t%d\t%d\n", id, ply, us == WHITE ? 'w' : 'b', u, "PNBRQK"[pt],
+                    printf("%s\t%ld\t%c\t%s\t%c\t%d\t%d\t%d\t%zu\t%d\t%ld\t%.6f\t%.6f\t%.6f\t%d\t%.6g\t%.6f\t%.6f\t%.6f\t%d\t%d\t%d\t%d\t%.6f\t%.6f\t%.6f\t%d\n", id, ply, us == WHITE ? 'w' : 'b', u, "PNBRQK"[pt],
                            cap_truth, cap_seen, c == m, b.count, b.overflowed, worlds, t1 > 0 ? l1 / t1 : 0, tt > 0 ? lt / tt : 0, tu > 0 ? lu / tu : 0, truth, tshare,
-                           t1 > 0 ? c1 / t1 : 0, tt > 0 ? ct / tt : 0, tu > 0 ? cu / tu : 0, truth_clean, df_t, ma_t, mat);
+                           t1 > 0 ? c1 / t1 : 0, tt > 0 ? ct / tt : 0, tu > 0 ? cu / tu : 0, truth_clean, df_t, ma_t, mat,
+                           t1 > 0 ? d1 / t1 : 0, tt > 0 ? dt / tt : 0, tu > 0 ? du / tu : 0, truth_undef);
                     ++rows;
                 }
             }

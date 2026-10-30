@@ -20,9 +20,10 @@ with open(path) as f:
         r = dict(zip(header, parts))
         rows.append({'game': r['game'], 'ply': int(r['ply']), 'move': r['move'], 'piece': r['piece'], 'cap_truth': r['capture_truth'] == '1',
                      'cap_seen': r['capture_seen'] == '1', 'played': r['played'] == '1', 'P': int(r['P']), 'capped': r['capped'] == '1',
-                     'pf': float(r['p_fitted']), 'ps': float(r['p_sharp']), 'pu': float(r['p_uniform']), 'y': int(r['truth']), 'share': float(r['truth_share']), 'qf': float(r['q_fitted']), 'qs': float(r['q_sharp']), 'qu': float(r['q_uniform']), 'yc': int(r['truth_clean']), 'def': r['defended_truth'] == '1', 'mat': int(r['material_before'])})
+                     'pf': float(r['p_fitted']), 'ps': float(r['p_sharp']), 'pu': float(r['p_uniform']), 'y': int(r['truth']), 'share': float(r['truth_share']), 'qf': float(r['q_fitted']), 'qs': float(r['q_sharp']), 'qu': float(r['q_uniform']), 'yc': int(r['truth_clean']), 'def': r['defended_truth'] == '1', 'mat': int(r['material_before']), 'uf': float(r['u_fitted']), 'us': float(r['u_sharp']), 'uu': float(r['u_uniform']), 'yu': int(r['truth_undefended'])})
 EST = [('fitted', 'pf'), ('sharp', 'ps'), ('uniform', 'pu')]
 ESTQ = [('fitted', 'qf'), ('sharp', 'qs'), ('uniform', 'qu')]
+ESTU = [('fitted', 'uf'), ('sharp', 'us'), ('uniform', 'uu')]
 for r in rows:
     if r['played']:
         after = material.get((r['game'], r['ply'] + 1))
@@ -73,16 +74,31 @@ P("\n\n## Clean-loss estimate (attacked from the fog and undefended, or by a che
 table(rows, 'All candidate piece moves, clean-loss label', ESTQ, 'yc')
 table(played, 'Played moves, clean-loss label', ESTQ, 'yc')
 table([r for r in played if r['ply'] <= 30], 'Played moves, plies <= 30, clean-loss label', ESTQ, 'yc')
+P("\n\n## Clean-loss event, strict: attacked from the fog AND no piece of ours attacks the destination (truth_undefended); u = the belief's estimate of that joint event\n")
+table(rows, 'All candidate piece moves, undefended label', ESTU, 'yu')
+table(played, 'Played moves, undefended label', ESTU, 'yu')
+table([r for r in played if r['ply'] <= 30], 'Played moves, plies <= 30, undefended label', ESTU, 'yu')
+table([r for r in played if r['cap_truth']], 'Played captures, undefended label', ESTU, 'yu')
+table([r for r in played if not r['cap_truth']], 'Played quiet moves, undefended label', ESTU, 'yu')
 sw = [r for r in played if r.get('swing') is not None]
 P("\n\n## Realised outcome: our piece move, then the opponent's reply (material swing within one exchange)\n")
 table(sw, 'Played moves, label = the reply captured the piece we moved', EST, 'taken')
 table(sw, 'Played moves, label = moved piece taken and still 3+ net down after our next move', ESTQ, 'taken_loss')
 table(sw, 'Played moves, label = the same, by a capturer that was UNSEEN at our decision', ESTQ, 'taken_loss_unseen')
 table([r for r in sw if r['ply'] <= 30], 'Played moves, plies <= 30, label = taken by an unseen capturer, 3+ net down', ESTQ, 'taken_loss_unseen')
+e30 = [r for r in sw if r['ply'] <= 30]
+P("\n### Base rates among played piece moves (plies <= 30, n %d): fog-attacked %.3f, attacked and undefended %.3f, attacked and one-exchange clean %.3f; realised: moved piece taken next reply %.3f, taken and still 3+ down after our next move %.3f, the same by an unseen capturer %.3f" % (len(e30), sum(r['y'] for r in e30)/len(e30), sum(r['yu'] for r in e30)/len(e30), sum(r['yc'] for r in e30)/len(e30), sum(r['taken'] for r in e30)/len(e30), sum(r['taken_loss'] for r in e30)/len(e30), sum(r['taken_loss_unseen'] for r in e30)/len(e30)))
+P("\n### Realised outcome of played moves whose destination WAS fog-attacked on the true board (plies <= 30)\n")
+fa = [r for r in e30 if r['y']]
+cats = {'clean loss (taken, 3+ down after our next move)': sum(1 for r in fa if r['taken_loss']), 'exchange (taken, not 3+ down after our next move)': sum(1 for r in fa if r['taken'] and not r['taken_loss']), 'not taken': sum(1 for r in fa if not r['taken'])}
+P(f"n {len(fa)}: " + '; '.join(f"{k} {v} ({v/max(len(fa),1):.0%})" for k, v in cats.items()))
+P("by defence on the true board: undefended -> clean loss %d / exchange %d / not taken %d; defended -> clean loss %d / exchange %d / not taken %d" % (
+   sum(1 for r in fa if r['yu'] and r['taken_loss']), sum(1 for r in fa if r['yu'] and r['taken'] and not r['taken_loss']), sum(1 for r in fa if r['yu'] and not r['taken']),
+   sum(1 for r in fa if not r['yu'] and r['taken_loss']), sum(1 for r in fa if not r['yu'] and r['taken'] and not r['taken_loss']), sum(1 for r in fa if not r['yu'] and not r['taken'])))
 lost = [r for r in sw if r['taken_loss_unseen']]
 P(f"\n### What the guards would have seen on the {len(lost)} played piece moves taken by an unseen capturer for a 3+ net loss ({len(lost)/max(len(sw),1):.3f} of {len(sw)} played piece moves; {sum(1 for r in sw if r['taken_loss'])} taken for a loss by any capturer)\n")
-P("| estimate | < 1% | 1-3% | 3-10% | 10-30% | >= 30% |"); P("|---|---|---|---|---|---|")
-for name, key in ESTQ:
+P("| estimate (clean-loss q, then undefended u) | < 1% | 1-3% | 3-10% | 10-30% | >= 30% |"); P("|---|---|---|---|---|---|")
+for name, key in ESTQ + [(n + ' (undefended)', k) for n, k in ESTU]:
     c = [sum(1 for r in lost if lo <= r[key] < hi) for lo, hi in BINS]
     P(f"| {name} | " + ' | '.join(f"{x} ({x/len(lost):.0%})" for x in c) + " |")
 P(f"- of these, the true board says clean-loss (yc) on {sum(r['yc'] for r in lost)}; attacked-from-fog on {sum(r['y'] for r in lost)}; captures on {sum(r['cap_truth'] for r in lost)}; belief capped on {sum(r['capped'] for r in lost)}; median truth share {sorted(r['share'] for r in lost)[len(lost)//2] if lost else None:.4g}")
