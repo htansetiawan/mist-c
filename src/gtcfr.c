@@ -3,6 +3,7 @@
 #include "gtcfr.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -10,6 +11,8 @@
 #include "cfr.h"
 #include "eval.h"
 #include "sfeval.h"
+
+const char *gtcfr_truth_board = NULL;   /* diagnostics: the true board of the current decision, or NULL */
 
 typedef struct {
     int node;                    /* the Game node, currently an evaluated leaf */
@@ -386,6 +389,9 @@ int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out) 
     double *share = malloc(draws * sizeof(double));
     uint64_t draw_rng = params->seed ^ 0x5eedULL;
     const int K = belief_sample(b, draws, &draw_rng, idx, share);
+    { const char *tb = gtcfr_truth_board;   /* diagnostics only (MIST_TRUTH_SEQ): was the true board drawn? */
+      if (tb) { int hit = 0; double w = 0; for (int i = 0; i < K; ++i) if (pos_matches_board_string(&b->items[idx[i]], tb)) { ++hit; w += share[i]; }
+                fprintf(stderr, "mist: truth sampled=%d of %d weight=%.4f\n", hit, K, w); } }
     MoveList ours; generate_moves(&b->items[idx[0]], &ours);
     if (ours.count == 0) { free(idx); free(share); game_free(&t.g); return 0; }
     if (params->avoid_count > 0) {

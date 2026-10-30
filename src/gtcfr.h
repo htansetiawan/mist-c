@@ -39,3 +39,6 @@ typedef struct {
 int gtcfr_decide(const Belief *b, const GtcfrParams *params, SearchResult *out);
 
 #endif
+
+/* diagnostics (MIST_TRUTH_SEQ): when set, the search logs whether this 64-char board was among its sampled worlds */
+extern const char *gtcfr_truth_board;
