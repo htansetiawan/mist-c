@@ -102,6 +102,21 @@ for name, key in ESTQ + [(n + ' (undefended)', k) for n, k in ESTU]:
     c = [sum(1 for r in lost if lo <= r[key] < hi) for lo, hi in BINS]
     P(f"| {name} | " + ' | '.join(f"{x} ({x/len(lost):.0%})" for x in c) + " |")
 P(f"- of these, the true board says clean-loss (yc) on {sum(r['yc'] for r in lost)}; attacked-from-fog on {sum(r['y'] for r in lost)}; captures on {sum(r['cap_truth'] for r in lost)}; belief capped on {sum(r['capped'] for r in lost)}; median truth share {sorted(r['share'] for r in lost)[len(lost)//2] if lost else None:.4g}")
+P("\n\n## Support failure: the belief's estimate is exactly zero because no world holds the attacker; a monotone map cannot fix those\n")
+def support(sel, key, ykey, title):
+    pos = [r for r in sel if r[ykey]]
+    if not pos: return
+    z = sum(1 for r in pos if r[key] == 0.0); lo = sum(1 for r in pos if 0 < r[key] <= 0.01); hi = len(pos) - z - lo
+    P(f"| {title} | {len(pos)} | {z} ({z/len(pos):.1%}) | {lo} ({lo/len(pos):.1%}) | {hi} ({hi/len(pos):.1%}) |")
+for label, ykey, est in (('attacked from the fog', 'y', EST), ('attacked and undefended', 'yu', ESTU)):
+    P(f"\n### Positives for the event '{label}' on the true board, by the belief's predicted probability\n")
+    P("| set, weighting | positives | predicted exactly 0 | in (0, 1%] | above 1% |"); P("|---|---|---|---|---|")
+    for name, key in est:
+        support(played, key, ykey, f"played, {name}")
+    for name, key in est:
+        support([r for r in played if r['ply'] <= 30], key, ykey, f"played plies <= 30, {name}")
+    for name, key in est:
+        support(rows, key, ykey, f"all candidates, {name}")
 # base rates by ply bucket, played moves
 P("\n### Realised fog-attacked rate of played piece moves by ply\n"); P("| plies | n | rate | mean fitted | mean sharp | mean uniform |"); P("|---|---|---|---|---|---|")
 for lo, hi in ((1, 10), (11, 20), (21, 30), (31, 40), (41, 60), (61, 400)):
