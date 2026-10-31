@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
             us = side[0] == 'w' ? WHITE : BLACK;
             belief_init_start(&b, us, cap);
             pos_start(&truth_before);
-            have = 1; ++games; skip = 0; ply = 0;
+            have = 1; ++games; skip = 0; ply = 0; have_view = 0;   /* a stale view must not label the next game's first reply */
             if (games % 20 == 0) fprintf(stderr, "  game %d, %ld decisions, %ld rows, %.0f s\n", games, decisions, rows, now() - t_start);
             continue;
         }
