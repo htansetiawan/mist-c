@@ -20,13 +20,15 @@ movemodel.c or movemodel_theta.h so Newton starts near the optimum.
 Reports nats per move over uniform and top-1 on the test set, overall and per mover,
 for the initial weights and after every pass, and writes the fitted theta as a C array.
 
-TRAIN and TEST may be named pipes fed by tools/move_features once per pass (one run
-per open), so the feature file never has to exist on disk; give --columns then.
+TRAIN or TEST may be "cmd:<shell command>" whose stdout is the feature stream, e.g.
+"cmd:build/move_features games.txt /dev/stdout 1"; the command is run once per pass on
+a private pipe, so the feature file never has to exist on disk. Give --columns then.
 """
 import argparse
 import json
 import re
 import struct
+import subprocess
 import sys
 import time
 
@@ -55,9 +57,27 @@ def read_init(path, D):
     return np.array(v, dtype=np.float64)
 
 
+def open_source(src):
+    """A feature file, or "cmd:<command>" whose stdout is the stream (one run per open)."""
+    if src.startswith("cmd:"):
+        proc = subprocess.Popen(src[4:], shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return proc.stdout, proc
+    return open(src, "rb"), None
+
+
 def chunks(path, chunk_bytes):
     """Yields (X float32 (rows, F), n, played, mover) for a run of whole positions."""
-    with open(path, "rb") as f:
+    f, proc = open_source(path)
+    try:
+        yield from _chunks(f, path, chunk_bytes)
+    finally:
+        f.close()
+        if proc is not None:
+            proc.wait()
+
+
+def _chunks(f, path, chunk_bytes):
+    if True:
         F = struct.unpack("<i", f.read(4))[0]
         buf = b""
         while True:
