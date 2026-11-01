@@ -149,10 +149,12 @@ def main():
     ap.add_argument("--chunk-mb", type=int, default=256)
     ap.add_argument("--out", default=None)
     ap.add_argument("--eval-only", action="store_true", help="score --init on the test set and stop")
+    ap.add_argument("--index-cols", type=int, default=3,
+                    help="trailing columns that are not facts (3 in the piece-square export, 0 in the v35 tool's)")
     a = ap.parse_args()
 
     F = np.fromfile(a.train, dtype="<i4", count=1)[0]
-    D = int(F) - 3
+    D = int(F) - a.index_cols
     names_tr = read_names(a.names)
     names_te = read_names(a.names_test) if a.names_test else names_tr
 
