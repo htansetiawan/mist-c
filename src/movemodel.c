@@ -5,13 +5,14 @@
 
 static const float value[6] = {1, 3, 3, 5, 9, 0};
 
-/* Fitted by tools/fit_move_model.py on 2,029 arena games from 2026-09-30 to
- * 2026-10-10 (138,140 moves by every player but the random ones and
- * baseline.py). On 371 held-out games (25,678 moves) the full model gains
- * 0.658 nats per move over uniform (top-1 27.4%; 0.631 before the undefended,
- * king-zone and x-ray features), the cheap one 0.493 (25.6%). */
-static const float theta_full[MM_FEATURES] = {1.0883f, 4.2173f, 0.0000f, -0.5976f, -0.7174f, -0.2331f, -0.4542f, -0.3852f, 0.1103f, 2.3662f, 1.6652f, -0.5344f, -0.8673f, -0.1008f, 0.8894f, 1.5612f, 1.4574f, 1.1427f, 0.7011f, 1.0507f, -0.1183f, -1.2109f, -2.5556f, -2.4094f, 0.3295f, 0.2615f, 0.0000f, 0.0000f};
-static const float theta_cheap[MM_FEATURES] = {0.7705f, 3.6690f, 0.0000f, -0.5296f, -0.6920f, -0.2792f, -0.7406f, -0.4606f, 0.1304f, 2.3256f, 1.3647f, -0.6156f, -1.4760f, -0.1127f, 0.7298f, 1.5767f, 1.6693f, 1.0416f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f};
+/* Refitted by tools/fit_move_model_stream.py (Newton, streamed) on 148,357 arena
+ * games from 2026-09-01 to 2026-10-31 (9,901,850 moves by every player but us and
+ * the random/baseline bots). On 26,029 held-out games (1,734,620 moves) the full
+ * model gains 0.645 nats per move over uniform (top-1 27.1%; the 10 October fit on
+ * 2,029 games scored 0.638 / 26.7% on the same moves), the cheap one 0.474
+ * (24.8%; was 0.472 / 24.5%). */
+static const float theta_full[MM_FEATURES] = {0.8256f, 6.1569f, 0.0000f, -0.5818f, -0.6813f, -0.1419f, -0.3730f, -0.3004f, 0.1104f, 2.5549f, 2.8820f, -1.1917f, -0.8334f, -0.1136f, 0.9504f, 1.5825f, 1.4175f, 1.2139f, 0.7535f, 1.0183f, -0.0249f, -1.5504f, -3.2408f, -3.1171f, 0.3764f, 0.2498f, 0.0000f, 0.0000f};
+static const float theta_cheap[MM_FEATURES] = {0.5520f, 4.5402f, 0.0000f, -0.5542f, -0.6984f, -0.2373f, -0.7377f, -0.3945f, 0.1346f, 2.4762f, 1.8108f, -1.7176f, -1.5143f, -0.1353f, 0.7632f, 1.6151f, 1.7061f, 1.1334f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f, 0.0000f};
 
 void move_logits(const Position *p, const MoveList *l, Move previous, int full, float *out) {
     const float *theta = full ? theta_full : theta_cheap;
