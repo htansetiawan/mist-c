@@ -19,6 +19,9 @@ movemodel.c or movemodel_theta.h so Newton starts near the optimum.
 
 Reports nats per move over uniform and top-1 on the test set, overall and per mover,
 for the initial weights and after every pass, and writes the fitted theta as a C array.
+
+TRAIN and TEST may be named pipes fed by tools/move_features once per pass (one run
+per open), so the feature file never has to exist on disk; give --columns then.
 """
 import argparse
 import json
@@ -151,9 +154,11 @@ def main():
     ap.add_argument("--eval-only", action="store_true", help="score --init on the test set and stop")
     ap.add_argument("--index-cols", type=int, default=3,
                     help="trailing columns that are not facts (3 in the piece-square export, 0 in the v35 tool's)")
+    ap.add_argument("--columns", type=int, default=None,
+                    help="F, the column count of the files; given when TRAIN is a pipe that cannot be peeked")
     a = ap.parse_args()
 
-    F = np.fromfile(a.train, dtype="<i4", count=1)[0]
+    F = a.columns if a.columns else np.fromfile(a.train, dtype="<i4", count=1)[0]
     D = int(F) - a.index_cols
     names_tr = read_names(a.names)
     names_te = read_names(a.names_test) if a.names_test else names_tr
