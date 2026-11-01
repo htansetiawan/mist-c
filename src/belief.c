@@ -179,6 +179,12 @@ static int settings_read = 0, model_on = 1, prune_capturable = 1;
  * below 4000 positions the update stays on one */
 static int threads_setting = 2;
 static float model_temp = 2.0f;
+/* MIST_DRAW_TEMP: the temperature of the weighting the search DRAWS its
+ * worlds from, applied in belief_sample as weight^(draw/model) over the stored
+ * (tempered) weights. Unset: the stored weighting, bit-identical to v35. The
+ * guards keep their own weightings (main.c), so 1.0 draws from the fitted
+ * model while the guards still see weight^model_temp. */
+static double draw_scale = 1.0;
 static size_t model_full_below = 10000;
 
 /* Empirical opponent prior (MIST_HISTORY_TABLE, built by tools/history_table.c):
@@ -234,6 +240,10 @@ static void read_settings(void) {
     const char *e;
     if ((e = getenv("MIST_MODEL")) && e[0] == '0') model_on = 0;
     if ((e = getenv("MIST_MODEL_TEMP"))) model_temp = (float)atof(e);
+    if ((e = getenv("MIST_DRAW_TEMP")) && model_temp > 0) {
+        draw_scale = atof(e) / (double)model_temp;
+        fprintf(stderr, "mist: draw temperature %s over model temperature %.2f (scale %.4f)\n", e, (double)model_temp, draw_scale);
+    }
     if ((e = getenv("MIST_MODEL_FULL_BELOW"))) model_full_below = (size_t)strtoull(e, NULL, 10);
     if ((e = getenv("MIST_PRUNE_CAPTURABLE")) && e[0] == '0') prune_capturable = 0;
     if ((e = getenv("MIST_HISTORY_TABLE")) && *e) read_history_table(e);
@@ -618,14 +628,14 @@ int belief_sample(const Belief *b, int K, uint64_t *rng, int *idx, double *prob)
     if (b->count == 0 || K <= 0) return 0;
     if (b->count <= (size_t)K) {
         double total = 0;
-        for (size_t i = 0; i < b->count; ++i) { idx[i] = (int)i; prob[i] = b->logw ? exp((double)b->logw[i]) : 1.0; total += prob[i]; }
+        for (size_t i = 0; i < b->count; ++i) { idx[i] = (int)i; prob[i] = b->logw ? exp((double)b->logw[i] * draw_scale) : 1.0; total += prob[i]; }
         for (size_t i = 0; i < b->count; ++i) prob[i] /= total;
         return (int)b->count;
     }
     /* K draws with replacement by weight: cumulative weights, binary search */
     double *cum = malloc(b->count * sizeof(double));
     double total = 0;
-    for (size_t i = 0; i < b->count; ++i) { total += b->logw ? exp((double)b->logw[i]) : 1.0; cum[i] = total; }
+    for (size_t i = 0; i < b->count; ++i) { total += b->logw ? exp((double)b->logw[i] * draw_scale) : 1.0; cum[i] = total; }
     for (int k = 0; k < K; ++k) {
         const double x = unit_open(rng) * total;
         size_t lo = 0, hi = b->count - 1;
